@@ -1,4 +1,38 @@
+# Project dataset
 dataset/hour.csv
+
+# Virtual environment
 .venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
+*.py[codz]
 *.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# VS Code
+.vscode/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS files
+.DS_Store
+Thumbs.db
