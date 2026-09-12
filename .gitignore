@@ -1,0 +1,4 @@
+dataset/hour.csv
+.venv/
+__pycache__/
+*.pyc
