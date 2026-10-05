@@ -2,141 +2,204 @@
 Smart Bike Rental Demand Advisor
 Streamlit Application — Sprint I MVP Prototype (11–27 September 2026)
 
-Integrates:
-- Operational input interface (FR-1.1)
-- Server-side input validation and boundary enforcement (FR-1.2, NFR-2)
-- Level 0 Baseline prediction and fallback system (FR-2.2, FR-2.4)
+Full-page wide layout with responsive cards, wide grid controls,
+input validation, and Level 0 baseline estimation.
 """
 
 import streamlit as st
 from src.baseline import get_baseline_instance
 from src.validation import validate_inputs, sanitize_inputs
 
-# Configure page layout and metadata (sidebar collapsed)
+# Configure page layout to wide for full-screen desktop fit
 st.set_page_config(
     page_title="Smart Bike Rental Demand Advisor",
     page_icon="🚲",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS to completely remove sidebar and increase typography / font sizes in the main view
+# Custom CSS for widescreen dashboard layout, rich cards, and large typography
 st.markdown(
     """
     <style>
-    /* Hide sidebar and sidebar toggle button completely */
+    /* Completely hide sidebar and collapsed toggle */
     [data-testid="stSidebar"], [data-testid="collapsedControl"] {
         display: none !important;
     }
 
-    /* Main container spacing and max width */
+    /* Full-width container with responsive breathing room */
     .block-container {
-        padding-top: 2rem !important;
-        padding-bottom: 3rem !important;
-        max-width: 860px !important;
+        padding-top: 1.5rem !important;
+        padding-bottom: 2.5rem !important;
+        padding-left: 3rem !important;
+        padding-right: 3rem !important;
+        max-width: 1400px !important;
     }
 
-    /* Main Title Styling */
-    h1 {
-        font-size: 2.7rem !important;
+    /* Hero Banner Card */
+    .hero-card {
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.95) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        padding: 1.6rem 2rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    }
+
+    .hero-title {
+        font-size: 2.5rem !important;
         font-weight: 800 !important;
-        letter-spacing: -0.5px !important;
-        margin-bottom: 0.4rem !important;
+        color: #ffffff !important;
+        margin: 0 !important;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
     }
 
-    /* Subheadings */
-    h2, h3 {
-        font-size: 1.65rem !important;
-        font-weight: 700 !important;
-        margin-top: 1.2rem !important;
+    .hero-subtitle {
+        font-size: 1.15rem !important;
+        color: #94a3b8 !important;
+        margin-top: 0.4rem !important;
         margin-bottom: 0.8rem !important;
     }
 
-    /* General Paragraph & Descriptive Text */
-    p, .stMarkdown p {
-        font-size: 1.15rem !important;
-        line-height: 1.65 !important;
+    .badge-container {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-top: 0.5rem;
     }
 
-    /* Widget Labels (Hour, Season, Weather, Working Day) */
+    .badge {
+        display: inline-block;
+        font-size: 0.88rem;
+        font-weight: 600;
+        padding: 0.3rem 0.8rem;
+        border-radius: 6px;
+    }
+
+    .badge-primary {
+        background: rgba(239, 68, 68, 0.18);
+        color: #f87171;
+        border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+
+    .badge-info {
+        background: rgba(59, 130, 246, 0.18);
+        color: #60a5fa;
+        border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+
+    .badge-success {
+        background: rgba(34, 197, 94, 0.18);
+        color: #4ade80;
+        border: 1px solid rgba(34, 197, 94, 0.35);
+    }
+
+    /* Section Card */
+    .section-card {
+        background: rgba(30, 41, 59, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .section-heading {
+        font-size: 1.45rem !important;
+        font-weight: 700 !important;
+        color: #f1f5f9 !important;
+        margin-bottom: 1.2rem !important;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    /* Form Widget Labels */
     [data-testid="stWidgetLabel"] p {
-        font-size: 1.2rem !important;
+        font-size: 1.15rem !important;
         font-weight: 600 !important;
-        margin-bottom: 0.35rem !important;
+        color: #e2e8f0 !important;
+        margin-bottom: 0.3rem !important;
     }
 
-    /* Input Controls (selectboxes, number inputs) text size */
-    .stSelectbox div[data-baseweb="select"] div, 
+    /* Form Inputs */
+    .stSelectbox div[data-baseweb="select"] div,
     .stNumberInput input {
         font-size: 1.15rem !important;
-    }
-
-    /* Primary Action Button */
-    button[kind="primary"] {
-        font-size: 1.3rem !important;
-        font-weight: 700 !important;
-        padding: 0.65rem 1.5rem !important;
         border-radius: 8px !important;
-        margin-top: 0.5rem !important;
     }
 
-    /* Metrics Values & Labels */
+    /* Predict Button */
+    button[kind="primary"] {
+        font-size: 1.35rem !important;
+        font-weight: 700 !important;
+        padding: 0.8rem 2rem !important;
+        border-radius: 10px !important;
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+        border: none !important;
+        box-shadow: 0 4px 14px rgba(239, 68, 68, 0.35) !important;
+        transition: all 0.2s ease-in-out !important;
+    }
+
+    button[kind="primary"]:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5) !important;
+    }
+
+    /* Metric Card Styling */
+    [data-testid="stMetric"] {
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        padding: 1.1rem 1.3rem;
+    }
+
     [data-testid="stMetricValue"] {
-        font-size: 2.6rem !important;
+        font-size: 2.7rem !important;
         font-weight: 800 !important;
-        color: #ff4b4b !important;
+        color: #f87171 !important;
     }
+
     [data-testid="stMetricLabel"] p {
-        font-size: 1.15rem !important;
+        font-size: 1.1rem !important;
         font-weight: 600 !important;
-        color: #d1d5db !important;
+        color: #94a3b8 !important;
     }
 
-    /* Alert / Banner text */
+    /* Alerts */
     [data-testid="stAlert"] p {
-        font-size: 1.15rem !important;
-        font-weight: 500 !important;
-    }
-
-    /* Tag / Badge for Sprint indicator */
-    .sprint-badge {
-        display: inline-block;
-        background-color: rgba(255, 75, 75, 0.15);
-        color: #ff6b6b;
-        border: 1px solid rgba(255, 75, 75, 0.3);
-        padding: 0.25rem 0.75rem;
-        border-radius: 6px;
-        font-weight: 600;
-        font-size: 0.95rem;
-        margin-bottom: 0.8rem;
+        font-size: 1.12rem !important;
     }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# App Header
-st.markdown('<span class="sprint-badge">Sprint I Deliverable • Input & Level 0 Baseline</span>', unsafe_allow_html=True)
-st.title("🚲 Smart Bike Rental Demand Advisor")
-st.caption("Decision-support system for bike-sharing fleet demand estimation (UCI Dataset: 17,379 records)")
-
+# Hero Header Banner across the full page width
 st.markdown(
     """
-    Enter the operational and environmental conditions below to validate parameters and obtain 
-    the demand estimation. During **Sprint I**, the system operates on the **Level 0 Baseline** 
-    (historical training mean benchmark), with full regression models arriving in Sprint II.
-    """
+    <div class="hero-card">
+        <h1 class="hero-title">🚲 Smart Bike Rental Demand Advisor</h1>
+        <p class="hero-subtitle">
+            ML-backed operational decision-support system for hourly bike-sharing fleet demand estimation.
+        </p>
+        <div class="badge-container">
+            <span class="badge badge-primary">Sprint I MVP: Input & Baseline Foundation</span>
+            <span class="badge badge-info">Active Dataset: UCI hour.csv (17,379 records)</span>
+            <span class="badge badge-success">Target Variable: cnt (Hourly Total)</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
 )
 
-st.divider()
+# Section 1: Inputs across 4 full-width columns
+st.markdown('<div class="section-heading">⚙️ 1. Operational & Environmental Conditions</div>', unsafe_allow_html=True)
 
-# Section: Input Selection
-st.subheader("1. Operational & Environmental Conditions")
-
-col1, col2 = st.columns(2, gap="large")
+col1, col2, col3, col4 = st.columns(4, gap="medium")
 
 with col1:
-    # Allow input range with bounds to demonstrate TC-02 validation in viva / audit
     hour_input = st.number_input(
         "Hour of Day (0 to 23)",
         min_value=-5,
@@ -146,34 +209,37 @@ with col1:
         help="Valid operational hours are integers from 0 to 23 (e.g., 17 for 5:00 PM)."
     )
 
+with col2:
     season_input = st.selectbox(
         "Season",
         options=["Spring", "Summer", "Fall", "Winter"],
         index=1,
-        help="Select the current season."
+        help="Select the operational season."
     )
 
-with col2:
+with col3:
     weather_input = st.selectbox(
         "Weather Severity",
         options=["Clear", "Mist/Cloudy", "Light Rain/Snow", "Heavy Rain"],
         index=0,
-        help="Select the prevailing weather conditions."
+        help="Select prevailing weather conditions."
     )
 
+with col4:
     working_day_input = st.selectbox(
         "Working Day",
         options=["Yes", "No"],
         index=0,
-        help="Is the date an operational working day (non-holiday weekday)?"
+        help="Operational working day (non-holiday weekday)?"
     )
 
-# Prediction Trigger Button
-predict_clicked = st.button("🚴 Predict Demand", type="primary", use_container_width=True)
+st.write("")
+predict_clicked = st.button("🚴 Predict Hourly Demand", type="primary", use_container_width=True)
 
+# Section 2: Validation & Output
 if predict_clicked:
-    st.divider()
-    st.subheader("2. Validation & Demand Estimation")
+    st.write("")
+    st.markdown('<div class="section-heading">📊 2. Validation & Demand Estimation Results</div>', unsafe_allow_html=True)
 
     # Step 1: Input Validation (FR-1.2, NFR-2)
     is_valid, validation_msg = validate_inputs(
@@ -184,13 +250,12 @@ if predict_clicked:
     )
 
     if not is_valid:
-        # Halt execution and show validation error message as required by FR-1.2 & Appendix B
-        st.error(f"❌ Input Validation Error:\n\n`{validation_msg}`")
-        st.warning("Execution halted. Please provide parameters strictly within operational bounds.")
+        # Halt execution and display boundary error
+        st.error(f"❌ **Input Validation Error:** `{validation_msg}`")
+        st.warning("Execution halted before baseline/model invocation. Please adjust inputs to valid domain ranges.")
     else:
-        st.success("✅ Inputs validated successfully.")
+        st.success("✅ **Input Sanity Check Passed:** All operational parameters strictly within domain bounds.")
 
-        # Sanitize parameters
         clean_inputs = sanitize_inputs(
             hour=hour_input,
             season=season_input,
@@ -199,40 +264,55 @@ if predict_clicked:
         )
 
         # Step 2: Fallback Notification (FR-2.4 & Appendix B)
-        st.warning(
-            "⚠️ **WARN_SYS_01:** Pre-trained model artifact missing. Loading **Level 0 baseline**."
-        )
+        st.warning("⚠️ **WARN_SYS_01:** Pre-trained model artifact missing. Loading **Level 0 baseline**.")
 
-        # Step 3: Compute Level 0 Estimate (FR-2.2, FR-2.4)
+        # Step 3: Compute Level 0 Estimate
         baseline = get_baseline_instance()
         prediction_result = baseline.predict(clean_inputs)
 
-        # Step 4: Display Output Metrics
-        metric_col1, metric_col2, metric_col3 = st.columns(3)
-        with metric_col1:
+        # Step 4: 4-Column Metric Grid across full width
+        m1, m2, m3, m4 = st.columns(4, gap="medium")
+        with m1:
             st.metric(
-                label="Estimated Bike Demand",
+                label="Estimated Hourly Demand",
                 value=f"{prediction_result['predicted_cnt']} bikes"
             )
-        with metric_col2:
+        with m2:
             st.metric(
                 label="Baseline MAE Margin",
                 value=f"± {prediction_result['mae']} bikes"
             )
-        with metric_col3:
+        with m3:
             st.metric(
-                label="Prediction Method",
+                label="Estimation Method",
                 value="Level 0 Mean"
             )
-
-        # Technical Details & Academic Explanation
-        with st.expander("📋 Technical Request & Baseline Details", expanded=True):
-            st.markdown(
-                f"""
-                - **Validated Parameters:** Hour `{clean_inputs['hour']}`, Season `{clean_inputs['season']}`, Weather `{clean_inputs['weather']}`, Working Day `{clean_inputs['working_day']}`
-                - **Baseline Method:** `{prediction_result['baseline_type']}`
-                - **Exact Historical Mean:** `{prediction_result['predicted_cnt_raw']:.2f}` bikes
-                - **Baseline MAE:** `{prediction_result['mae']}` bikes
-                - **Note:** {prediction_result['note']}
-                """
+        with m4:
+            st.metric(
+                label="Historical Baseline Mean",
+                value=f"{prediction_result['predicted_cnt_raw']:.1f} bikes"
             )
+
+        # Step 5: Wide Technical Breakdown Card
+        st.write("")
+        with st.expander("📋 Sprint-I Technical Architecture & Level 0 Details", expanded=True):
+            det_col1, det_col2 = st.columns(2, gap="large")
+            with det_col1:
+                st.markdown(
+                    f"""
+                    **Validated Request Vector:**
+                    - **Hour:** `{clean_inputs['hour']}:00`
+                    - **Season:** `{clean_inputs['season']}` (Code: `{clean_inputs['season_code']}`)
+                    - **Weather:** `{clean_inputs['weather']}` (Code: `{clean_inputs['weather_code']}`)
+                    - **Working Day:** `{clean_inputs['working_day']}` (Flag: `{clean_inputs['working_day_flag']}`)
+                    """
+                )
+            with det_col2:
+                st.markdown(
+                    fr"""
+                    **Level 0 Baseline Principles:**
+                    - **Benchmark Nature:** Predicts overall training dataset mean ($\mu = 189.46$).
+                    - **Input Invariance:** Intentionally ignores condition parameters to establish the lowest performance bar.
+                    - **Sprint II Goal:** Train Decision Tree / Random Forest models to beat the baseline MAE of **{prediction_result['mae']} bikes**.
+                    """
+                )
