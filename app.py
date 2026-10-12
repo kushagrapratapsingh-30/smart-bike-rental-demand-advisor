@@ -212,9 +212,9 @@ with col1:
 with col2:
     season_input = st.selectbox(
         "Season",
-        options=["Spring", "Summer", "Fall", "Winter"],
-        index=1,
-        help="Select the operational season."
+        options=["Winter", "Spring", "Summer", "Fall"],
+        index=0,
+        help="Select the operational season (1: Winter, 2: Spring, 3: Summer, 4: Fall per SRS v1.5)."
     )
 
 with col3:
@@ -263,8 +263,8 @@ if predict_clicked:
             working_day=working_day_input
         )
 
-        # Step 2: Fallback Notification (FR-2.4 & Appendix B)
-        st.warning("⚠️ **WARN_SYS_01:** Pre-trained model artifact missing. Loading **Level 0 baseline**.")
+        # Step 2: Fallback Notification (FR-3.6 & Appendix B)
+        st.warning("⚠️ **WARN_SYS_01:** Model artifact unavailable; showing Level 0 fallback.")
 
         # Step 3: Compute Level 0 Estimate
         baseline = get_baseline_instance()
@@ -313,6 +313,6 @@ if predict_clicked:
                     **Level 0 Baseline Principles:**
                     - **Benchmark Nature:** Predicts overall training dataset mean ($\mu = 189.46$).
                     - **Input Invariance:** Intentionally ignores condition parameters to establish the lowest performance bar.
-                    - **Sprint II Goal:** Train Decision Tree / Random Forest models to beat the baseline MAE of **{prediction_result['mae']} bikes**.
+                    - **Sprint II Goal:** Train Linear Regression (L4) and Random Forest (L5) models to evaluate on chronological split.
                     """
                 )

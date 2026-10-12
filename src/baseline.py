@@ -55,10 +55,10 @@ class Level0Baseline:
             "mae": round(self.mae, 2),
             "baseline_type": "Level 0 Baseline (Global Training Set Mean)",
             "is_fallback": True,
-            "fallback_warning": "WARN_SYS_01: Pre-trained model artifact missing. Loading Level 0 baseline.",
+            "fallback_warning": "WARN_SYS_01: Model artifact unavailable; showing Level 0 fallback.",
             "note": (
                 "This is a naive baseline estimate ignoring operational conditions. "
-                "Trained ML regression models (Level 1, Random Forest) will be integrated in Sprint II."
+                "Trained ML regression models (L1-L5) will be evaluated in subsequent sprints."
             ),
         }
 

@@ -1,32 +1,37 @@
 """
 Sprint I Automated Test Suite
-Smart Bike Rental Demand Advisor
+Smart Bike Rental Demand Advisor — Aligned to SRS v1.5
 
-Executes test cases mapped to SRS v1.1:
-- TC-01: Valid inputs -> Level 0 baseline non-negative output (189 bikes)
-- TC-02: Out-of-bounds input (Hour: 25) -> Validation halts with ERR_VAL_01
-- TC-03: Invariance check across multiple valid inputs
-- Data integrity & target leakage verification (C2)
-- Fallback system notification (FR-2.4, WARN_SYS_01)
+Executes test cases mapped to SRS v1.5:
+- Sprint 1A: Dataset integrity, descriptive statistics, target leakage (C-2), season mapping (1=Winter, 2=Spring, 3=Summer, 4=Fall).
+- Sprint 1B: Input validation (ERR_VAL_01, TC-02), dataset schema validation, missing columns/values, negative counts, target consistency.
+- Baseline Level 0: Mean prediction invariance, MAE benchmark, and WARN_SYS_01 fallback.
 """
 
 import unittest
 import os
+import numpy as np
 import pandas as pd
-from src.data_cleaning import load_dataset, inspect_dataset
+from src.data_cleaning import load_dataset, inspect_dataset, get_dataset_diagnostics
 from src.baseline import Level0Baseline, get_baseline_instance, predict_demand_fallback
 from src.validation import (
+    VALID_SEASONS,
+    VALID_WEATHER,
+    VALID_WORKING_DAY,
+    REQUIRED_DATASET_COLUMNS,
     validate_hour,
     validate_season,
     validate_weather,
     validate_working_day,
     validate_inputs,
     sanitize_inputs,
+    validate_dataset_schema,
+    validate_dataset_record,
 )
 
 
 class TestSprint1DataAndCleaning(unittest.TestCase):
-    """Verifies dataset loading, integrity, and target leakage constraints."""
+    """Sprint 1A: Verifies dataset loading, integrity, statistics, and target leakage constraints."""
 
     @classmethod
     def setUpClass(cls):
@@ -49,11 +54,44 @@ class TestSprint1DataAndCleaning(unittest.TestCase):
 
     def test_target_non_negative(self):
         self.assertTrue((self.df["cnt"] >= 0).all())
+        self.assertGreaterEqual(self.df["cnt"].min(), 1)
 
     def test_target_leakage_constraint_c2(self):
         """Verify casual + registered == cnt to prove target leakage if included."""
         mismatches = ((self.df["casual"] + self.df["registered"]) != self.df["cnt"]).sum()
-        self.assertEqual(mismatches, 0, "casual + registered must equal cnt")
+        self.assertEqual(mismatches, 0, "casual + registered must strictly equal cnt for 100% of rows")
+
+    def test_target_descriptive_statistics(self):
+        """Verify descriptive statistics and distribution per SRS Section 3.3."""
+        diag = get_dataset_diagnostics(self.df)
+        stats = diag["target_stats"]
+        self.assertEqual(stats["count"], 17379)
+        self.assertAlmostEqual(stats["mean"], 189.46, delta=0.1)
+        self.assertEqual(stats["median"], 142.0)
+        self.assertAlmostEqual(stats["std"], 181.39, delta=0.1)
+        self.assertAlmostEqual(stats["skewness"], 1.28, delta=0.05)
+        self.assertEqual(stats["min"], 1)
+        self.assertEqual(stats["max"], 977)
+        self.assertEqual(stats["negative_count"], 0)
+
+    def test_season_coding_and_boundaries(self):
+        """Verify season coding in hour.csv adheres to SRS v1.5 (1=Winter, 2=Spring, 3=Summer, 4=Fall)."""
+        # Season 1 is present in Jan (month 1), Feb (month 2), Dec (month 12)
+        s1_months = set(self.df[self.df["season"] == 1]["mnth"].unique())
+        self.assertTrue({1, 2, 12}.issubset(s1_months))
+
+        # Check season transitions in 2011:
+        # Spring starts around 2011-03-21 (season 2)
+        s2_first = self.df[self.df["season"] == 2].iloc[0]
+        self.assertEqual(s2_first["dteday"], "2011-03-21")
+
+        # Summer starts around 2011-06-21 (season 3)
+        s3_first = self.df[self.df["season"] == 3].iloc[0]
+        self.assertEqual(s3_first["dteday"], "2011-06-21")
+
+        # Fall starts around 2011-09-23 (season 4)
+        s4_first = self.df[self.df["season"] == 4].iloc[0]
+        self.assertEqual(s4_first["dteday"], "2011-09-23")
 
 
 class TestSprint1Baseline(unittest.TestCase):
@@ -64,16 +102,14 @@ class TestSprint1Baseline(unittest.TestCase):
         cls.baseline = get_baseline_instance()
 
     def test_level_0_mean_value(self):
-        # Expected global mean ~189.46, rounded to 189
         self.assertAlmostEqual(self.baseline.mean_demand, 189.46, delta=0.5)
         self.assertEqual(self.baseline.rounded_demand, 189)
 
     def test_baseline_mae(self):
-        # Expected MAE ~142.4 bikes
         self.assertAlmostEqual(self.baseline.mae, 142.4, delta=1.0)
 
     def test_tc_01_core_prediction(self):
-        """TC-01: Valid inputs (Hour: 17, Season: Summer, Weather: Clear, WorkingDay: Yes)"""
+        """TC-01: Valid inputs -> Level 0 baseline prediction with WARN_SYS_01."""
         inputs = {"hour": 17, "season": "Summer", "weather": "Clear", "working_day": "Yes"}
         result = self.baseline.predict(inputs)
 
@@ -83,7 +119,7 @@ class TestSprint1Baseline(unittest.TestCase):
         self.assertIn("WARN_SYS_01", result["fallback_warning"])
 
     def test_tc_03_invariance_check(self):
-        """TC-03 & TC-04: Level 0 ignores inputs, returning the same mean for all queries."""
+        """TC-03: Level 0 ignores inputs, returning identical mean for all queries."""
         inputs_1 = {"hour": 17, "season": "Summer", "weather": "Clear", "working_day": "Yes"}
         inputs_2 = {"hour": 8, "season": "Winter", "weather": "Mist/Cloudy", "working_day": "Yes"}
         inputs_3 = {"hour": 23, "season": "Fall", "weather": "Light Rain/Snow", "working_day": "No"}
@@ -98,7 +134,7 @@ class TestSprint1Baseline(unittest.TestCase):
 
 
 class TestSprint1Validation(unittest.TestCase):
-    """Verifies input boundary checks and error messages (FR-1.2, NFR-2)."""
+    """Sprint 1B: Verifies single input boundary checks and error messages (FR-1.2, NFR-2)."""
 
     def test_valid_hour(self):
         ok, msg = validate_hour(17)
@@ -124,35 +160,147 @@ class TestSprint1Validation(unittest.TestCase):
         self.assertFalse(ok_float)
         self.assertIn("ERR_VAL_01", msg_float)
 
+        ok_bool, msg_bool = validate_hour(True)
+        self.assertFalse(ok_bool)
+        self.assertIn("ERR_VAL_01", msg_bool)
+
+    def test_season_mapping_srs_v15(self):
+        """Verify season mapping adheres to SRS v1.5: 1=Winter, 2=Spring, 3=Summer, 4=Fall."""
+        self.assertEqual(VALID_SEASONS["Winter"], 1)
+        self.assertEqual(VALID_SEASONS["Spring"], 2)
+        self.assertEqual(VALID_SEASONS["Summer"], 3)
+        self.assertEqual(VALID_SEASONS["Fall"], 4)
+
     def test_invalid_season(self):
         ok, msg = validate_season("InvalidSeason")
         self.assertFalse(ok)
-        self.assertIn("ERR_VAL_02", msg)
+        self.assertIn("ERR_VAL_SEASON", msg)
 
     def test_invalid_weather(self):
         ok, msg = validate_weather("Tornado")
         self.assertFalse(ok)
-        self.assertIn("ERR_VAL_03", msg)
+        self.assertIn("ERR_VAL_WEATHER", msg)
 
     def test_invalid_working_day(self):
         ok, msg = validate_working_day("Maybe")
         self.assertFalse(ok)
-        self.assertIn("ERR_VAL_04", msg)
+        self.assertIn("ERR_VAL_WORKINGDAY", msg)
 
     def test_aggregate_validation_and_sanitization(self):
-        # Valid
+        # Valid Summer request (Code 3 under SRS v1.5)
         ok, msg = validate_inputs(17, "Summer", "Clear", "Yes")
         self.assertTrue(ok)
         sanitized = sanitize_inputs(17, "Summer", "Clear", "Yes")
         self.assertEqual(sanitized["hour"], 17)
-        self.assertEqual(sanitized["season_code"], 2)
+        self.assertEqual(sanitized["season_code"], 3)  # Summer is 3 per SRS v1.5
         self.assertEqual(sanitized["weather_code"], 1)
         self.assertEqual(sanitized["working_day_flag"], 1)
+
+        # Valid Winter request (Code 1 under SRS v1.5)
+        sanitized_winter = sanitize_inputs(8, "Winter", "Mist/Cloudy", "No")
+        self.assertEqual(sanitized_winter["season_code"], 1)  # Winter is 1 per SRS v1.5
 
         # Invalid hour halts aggregate validation
         ok_fail, msg_fail = validate_inputs(25, "Summer", "Clear", "Yes")
         self.assertFalse(ok_fail)
         self.assertIn("ERR_VAL_01", msg_fail)
+
+
+class TestSprint1DatasetSchemaValidation(unittest.TestCase):
+    """Sprint 1B: Verifies DataFrame schema and record-level validation rules."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.df = load_dataset("dataset/hour.csv")
+
+    def test_valid_dataset_passes_schema_validation(self):
+        """Verify the actual hour.csv passes all schema checks without error."""
+        is_valid, errors = validate_dataset_schema(self.df)
+        self.assertTrue(is_valid)
+        self.assertEqual(len(errors), 0)
+
+    def test_missing_required_column_detected(self):
+        """Missing required column is detected and reported."""
+        corrupt_df = self.df.drop(columns=["cnt"])
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("Missing required columns" in e for e in errors))
+
+    def test_missing_values_detected(self):
+        """Missing / null values in dataset are detected and reported."""
+        corrupt_df = self.df.head(50).copy()
+        corrupt_df.loc[5, "temp"] = np.nan
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("Missing/null values detected" in e for e in errors))
+
+    def test_negative_rental_counts_detected(self):
+        """Negative rental counts in target or components are rejected."""
+        corrupt_df = self.df.head(50).copy()
+        corrupt_df.loc[10, "cnt"] = -5
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("negative rental counts" in e for e in errors))
+
+    def test_invalid_hour_values_detected(self):
+        """Hour values outside 0-23 are detected."""
+        corrupt_df = self.df.head(50).copy()
+        corrupt_df.loc[2, "hr"] = 28
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("outside valid range 0–23" in e for e in errors))
+
+    def test_invalid_season_values_detected(self):
+        """Season values outside 1-4 domain are detected."""
+        corrupt_df = self.df.head(50).copy()
+        corrupt_df.loc[3, "season"] = 9
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("outside valid domain 1–4" in e for e in errors))
+
+    def test_invalid_weather_values_detected(self):
+        """Weather values outside 1-4 domain are detected."""
+        corrupt_df = self.df.head(50).copy()
+        corrupt_df.loc[4, "weathersit"] = 0
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("outside valid domain 1–4" in e for e in errors))
+
+    def test_target_consistency_violation_detected(self):
+        """Target consistency failure (casual + registered != cnt) is detected."""
+        corrupt_df = self.df.head(50).copy()
+        corrupt_df.loc[0, "casual"] = 999  # breaks casual + registered == cnt
+        is_valid, errors = validate_dataset_schema(corrupt_df)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("Target consistency failure" in e for e in errors))
+
+    def test_record_level_validation(self):
+        """Verify record-level validation on valid and invalid single records."""
+        # Valid record
+        valid_rec = {
+            "hr": 17,
+            "season": 3,
+            "weathersit": 1,
+            "casual": 20,
+            "registered": 80,
+            "cnt": 100
+        }
+        ok_v, errs_v = validate_dataset_record(valid_rec)
+        self.assertTrue(ok_v)
+        self.assertEqual(len(errs_v), 0)
+
+        # Invalid record (hour out of bounds, negative registered, target inconsistent)
+        invalid_rec = {
+            "hr": 26,
+            "season": 5,
+            "weathersit": 9,
+            "casual": 10,
+            "registered": -5,
+            "cnt": 50
+        }
+        ok_i, errs_i = validate_dataset_record(invalid_rec)
+        self.assertFalse(ok_i)
+        self.assertGreaterEqual(len(errs_i), 3)
 
 
 if __name__ == "__main__":
