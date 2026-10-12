@@ -1,19 +1,13 @@
-"""
-Sprint I Automated Test Suite
-Smart Bike Rental Demand Advisor — Aligned to SRS v1.5
+"""Sprint 1 automated test suite for data cleaning, validation rules, and Level 0 baseline."""
 
-Executes test cases mapped to SRS v1.5:
-- Sprint 1A: Dataset integrity, descriptive statistics, target leakage (C-2), season mapping (1=Winter, 2=Spring, 3=Summer, 4=Fall).
-- Sprint 1B: Input validation (ERR_VAL_01, TC-02), dataset schema validation, missing columns/values, negative counts, target consistency.
-- Baseline Level 0: Mean prediction invariance, MAE benchmark, and WARN_SYS_01 fallback.
-"""
-
-import unittest
 import os
+import unittest
+
 import numpy as np
 import pandas as pd
-from src.data_cleaning import load_dataset, inspect_dataset, get_dataset_diagnostics
+
 from src.baseline import Level0Baseline, get_baseline_instance, predict_demand_fallback
+from src.data_cleaning import get_dataset_diagnostics, inspect_dataset, load_dataset
 from src.validation import (
     VALID_SEASONS,
     VALID_WEATHER,
@@ -31,7 +25,7 @@ from src.validation import (
 
 
 class TestSprint1DataAndCleaning(unittest.TestCase):
-    """Sprint 1A: Verifies dataset loading, integrity, statistics, and target leakage constraints."""
+    """Verify dataset loading, target statistics, and leakage constraints."""
 
     @classmethod
     def setUpClass(cls):
@@ -76,26 +70,23 @@ class TestSprint1DataAndCleaning(unittest.TestCase):
 
     def test_season_coding_and_boundaries(self):
         """Verify season coding in hour.csv adheres to SRS v1.5 (1=Winter, 2=Spring, 3=Summer, 4=Fall)."""
-        # Season 1 is present in Jan (month 1), Feb (month 2), Dec (month 12)
+        # Season 1 is present in Jan, Feb, Dec (Winter)
         s1_months = set(self.df[self.df["season"] == 1]["mnth"].unique())
         self.assertTrue({1, 2, 12}.issubset(s1_months))
 
-        # Check season transitions in 2011:
-        # Spring starts around 2011-03-21 (season 2)
+        # 2011 transitions around astronomical solstices and equinoxes (SRS v1.5 Sec 4.4)
         s2_first = self.df[self.df["season"] == 2].iloc[0]
-        self.assertEqual(s2_first["dteday"], "2011-03-21")
+        self.assertEqual(s2_first["dteday"], "2011-03-21")  # Spring equinox
 
-        # Summer starts around 2011-06-21 (season 3)
         s3_first = self.df[self.df["season"] == 3].iloc[0]
-        self.assertEqual(s3_first["dteday"], "2011-06-21")
+        self.assertEqual(s3_first["dteday"], "2011-06-21")  # Summer solstice
 
-        # Fall starts around 2011-09-23 (season 4)
         s4_first = self.df[self.df["season"] == 4].iloc[0]
-        self.assertEqual(s4_first["dteday"], "2011-09-23")
+        self.assertEqual(s4_first["dteday"], "2011-09-23")  # Autumnal equinox
 
 
 class TestSprint1Baseline(unittest.TestCase):
-    """Verifies Level 0 baseline calculation, MAE, and fallback behavior."""
+    """Verify Level 0 baseline calculation, MAE, and fallback behavior."""
 
     @classmethod
     def setUpClass(cls):
@@ -187,7 +178,6 @@ class TestSprint1Validation(unittest.TestCase):
         self.assertIn("ERR_VAL_WORKINGDAY", msg)
 
     def test_aggregate_validation_and_sanitization(self):
-        # Valid Summer request (Code 3 under SRS v1.5)
         ok, msg = validate_inputs(17, "Summer", "Clear", "Yes")
         self.assertTrue(ok)
         sanitized = sanitize_inputs(17, "Summer", "Clear", "Yes")
@@ -196,18 +186,16 @@ class TestSprint1Validation(unittest.TestCase):
         self.assertEqual(sanitized["weather_code"], 1)
         self.assertEqual(sanitized["working_day_flag"], 1)
 
-        # Valid Winter request (Code 1 under SRS v1.5)
         sanitized_winter = sanitize_inputs(8, "Winter", "Mist/Cloudy", "No")
         self.assertEqual(sanitized_winter["season_code"], 1)  # Winter is 1 per SRS v1.5
 
-        # Invalid hour halts aggregate validation
         ok_fail, msg_fail = validate_inputs(25, "Summer", "Clear", "Yes")
         self.assertFalse(ok_fail)
         self.assertIn("ERR_VAL_01", msg_fail)
 
 
 class TestSprint1DatasetSchemaValidation(unittest.TestCase):
-    """Sprint 1B: Verifies DataFrame schema and record-level validation rules."""
+    """Verify DataFrame schema rules and record-level validation."""
 
     @classmethod
     def setUpClass(cls):
@@ -276,7 +264,6 @@ class TestSprint1DatasetSchemaValidation(unittest.TestCase):
 
     def test_record_level_validation(self):
         """Verify record-level validation on valid and invalid single records."""
-        # Valid record
         valid_rec = {
             "hr": 17,
             "season": 3,
@@ -289,7 +276,6 @@ class TestSprint1DatasetSchemaValidation(unittest.TestCase):
         self.assertTrue(ok_v)
         self.assertEqual(len(errs_v), 0)
 
-        # Invalid record (hour out of bounds, negative registered, target inconsistent)
         invalid_rec = {
             "hr": 26,
             "season": 5,

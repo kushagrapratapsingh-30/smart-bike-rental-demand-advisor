@@ -1,31 +1,20 @@
-"""
-Data Loading, Inspection, and Cleaning Module
-Sprint I Deliverable - Smart Bike Rental Demand Advisor
-
-Performs initial dataset loading, integrity verification, data quality checks,
-and target leakage auditing on dataset/hour.csv.
-"""
+"""Data loading and inspection utilities for hour.csv."""
 
 import os
+from typing import Any, Dict
+
 import pandas as pd
 
 
-from typing import Dict, Any
-
-
 def load_dataset(csv_path: str = "dataset/hour.csv") -> pd.DataFrame:
-    """Load the UCI Bike Sharing hourly dataset from disk."""
+    """Load the hourly dataset from CSV."""
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset file not found at path: {csv_path}")
-    df = pd.read_csv(csv_path)
-    return df
+    return pd.read_csv(csv_path)
 
 
 def get_dataset_diagnostics(df: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Compute comprehensive dataset diagnostics, descriptive statistics,
-    and integrity metrics per SRS v1.5 Section 3.1 & 3.3.
-    """
+    """Calculate summary statistics, missing counts, and leakage checks."""
     null_counts = df.isnull().sum().to_dict()
     total_missing = int(sum(null_counts.values()))
     dup_count = int(df.duplicated().sum())
@@ -61,17 +50,7 @@ def get_dataset_diagnostics(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def inspect_dataset(csv_path: str = "dataset/hour.csv") -> pd.DataFrame:
-    """
-    Run comprehensive data inspection and quality checks per SRS v1.5:
-    - Head & shape (17,379 records, 17 columns)
-    - Columns and data types
-    - Missing values (0 missing)
-    - Duplicate rows (0 duplicates)
-    - Hour range check (0 to 23)
-    - Target distribution (mean, median, std, skewness, min, max, negative count)
-    - Target leakage check (casual + registered == cnt)
-    - Semantic note: One row represents one hour of bike-sharing activity in Washington, D.C.
-    """
+    """Print dataset checks and summary statistics."""
     df = load_dataset(csv_path)
     diag = get_dataset_diagnostics(df)
 

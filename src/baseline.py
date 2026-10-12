@@ -1,24 +1,14 @@
-"""
-Baseline Modeling Module
-Sprint I Deliverable - Smart Bike Rental Demand Advisor
-
-Calculates and serves the Level 0 Baseline:
-- Predicts the global training set mean demand regardless of input conditions.
-- Computes baseline Mean Absolute Error (MAE) for benchmark comparisons in Sprint II.
-- Serves as the fallback mechanism when pre-trained ML artifacts are unavailable (FR-2.4).
-"""
+"""Level 0 naive baseline model predicting overall mean rental demand."""
 
 import os
-from typing import Dict, Any, Optional
-import pandas as pd
+from typing import Any, Dict, Optional
+
 import numpy as np
+import pandas as pd
 
 
 class Level0Baseline:
-    """
-    Level 0 Naive Baseline:
-    Always returns the overall historical mean demand (cnt).
-    """
+    """Predicts overall training set mean demand as an unconditioned benchmark."""
 
     def __init__(self, dataset_path: str = "dataset/hour.csv"):
         self.dataset_path = dataset_path
@@ -29,7 +19,6 @@ class Level0Baseline:
         self._fit()
 
     def _fit(self) -> None:
-        """Load the historical dataset and compute baseline statistics."""
         if not os.path.exists(self.dataset_path):
             raise FileNotFoundError(
                 f"Historical dataset not found at: {self.dataset_path}"
@@ -41,14 +30,10 @@ class Level0Baseline:
         self.sample_size = len(df)
         self.mean_demand = float(df["cnt"].mean())
         self.rounded_demand = int(round(self.mean_demand))
-        # Compute baseline MAE: mean(|cnt - mean_demand|)
         self.mae = float(np.mean(np.abs(df["cnt"] - self.mean_demand)))
 
     def predict(self, input_features: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Produce Level 0 baseline prediction.
-        Input features are deliberately ignored by design.
-        """
+        """Return the Level 0 baseline prediction, ignoring input features."""
         return {
             "predicted_cnt": self.rounded_demand,
             "predicted_cnt_raw": self.mean_demand,
@@ -63,7 +48,6 @@ class Level0Baseline:
         }
 
 
-# Singleton instance for quick access
 _baseline_instance: Optional[Level0Baseline] = None
 
 
@@ -83,15 +67,9 @@ def predict_demand_fallback(inputs: Optional[Dict[str, Any]] = None) -> Dict[str
 
 if __name__ == "__main__":
     baseline = get_baseline_instance()
-    print("=" * 60)
-    print("LEVEL 0 BASELINE CALCULATION")
-    print("=" * 60)
-    print(f"Dataset Records: {baseline.sample_size}")
-    print(f"Global Mean Demand (cnt): {baseline.mean_demand:.2f} bikes")
-    print(f"Rounded Baseline Demand: {baseline.rounded_demand} bikes")
+    print("=== Level 0 Baseline ===")
+    print(f"Records: {baseline.sample_size}")
+    print(f"Mean demand: {baseline.mean_demand:.2f} bikes")
     print(f"Baseline MAE: {baseline.mae:.2f} bikes")
-    print("\nSample Prediction Output (inputs ignored):")
     sample_res = baseline.predict({"hour": 17, "season": "Summer", "weather": "Clear", "working_day": "Yes"})
-    for k, v in sample_res.items():
-        print(f"  {k}: {v}")
-    print("=" * 60)
+    print("Sample prediction:", sample_res["predicted_cnt"], "bikes")

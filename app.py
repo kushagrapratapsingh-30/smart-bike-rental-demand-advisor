@@ -1,16 +1,12 @@
 """
 Smart Bike Rental Demand Advisor
-Streamlit Application — Sprint I MVP Prototype (11–27 September 2026)
-
-Full-page wide layout with responsive cards, wide grid controls,
-input validation, and Level 0 baseline estimation.
+Streamlit application for hourly bike rental demand estimation.
 """
 
 import streamlit as st
 from src.baseline import get_baseline_instance
 from src.validation import validate_inputs, sanitize_inputs
 
-# Configure page layout to wide for full-screen desktop fit
 st.set_page_config(
     page_title="Smart Bike Rental Demand Advisor",
     page_icon="🚲",
@@ -18,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for widescreen dashboard layout, rich cards, and large typography
+# Custom dashboard styling
 st.markdown(
     """
     <style>
@@ -194,7 +190,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Section 1: Inputs across 4 full-width columns
+# Input controls
 st.markdown('<div class="section-heading">⚙️ 1. Operational & Environmental Conditions</div>', unsafe_allow_html=True)
 
 col1, col2, col3, col4 = st.columns(4, gap="medium")
@@ -236,12 +232,11 @@ with col4:
 st.write("")
 predict_clicked = st.button("🚴 Predict Hourly Demand", type="primary", use_container_width=True)
 
-# Section 2: Validation & Output
+# Validation and estimation output
 if predict_clicked:
     st.write("")
     st.markdown('<div class="section-heading">📊 2. Validation & Demand Estimation Results</div>', unsafe_allow_html=True)
 
-    # Step 1: Input Validation (FR-1.2, NFR-2)
     is_valid, validation_msg = validate_inputs(
         hour=hour_input,
         season=season_input,
@@ -250,7 +245,6 @@ if predict_clicked:
     )
 
     if not is_valid:
-        # Halt execution and display boundary error
         st.error(f"❌ **Input Validation Error:** `{validation_msg}`")
         st.warning("Execution halted before baseline/model invocation. Please adjust inputs to valid domain ranges.")
     else:
@@ -263,14 +257,11 @@ if predict_clicked:
             working_day=working_day_input
         )
 
-        # Step 2: Fallback Notification (FR-3.6 & Appendix B)
         st.warning("⚠️ **WARN_SYS_01:** Model artifact unavailable; showing Level 0 fallback.")
 
-        # Step 3: Compute Level 0 Estimate
         baseline = get_baseline_instance()
         prediction_result = baseline.predict(clean_inputs)
 
-        # Step 4: 4-Column Metric Grid across full width
         m1, m2, m3, m4 = st.columns(4, gap="medium")
         with m1:
             st.metric(
@@ -293,7 +284,6 @@ if predict_clicked:
                 value=f"{prediction_result['predicted_cnt_raw']:.1f} bikes"
             )
 
-        # Step 5: Wide Technical Breakdown Card
         st.write("")
         with st.expander("📋 Sprint-I Technical Architecture & Level 0 Details", expanded=True):
             det_col1, det_col2 = st.columns(2, gap="large")
