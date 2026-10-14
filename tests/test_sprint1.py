@@ -1,4 +1,4 @@
-"""Sprint 1 automated test suite for data cleaning, validation rules, and Level 0 baseline."""
+"""Sprint 1 automated test suite for data cleaning, validation rules, baseline, and EDA."""
 
 import os
 import unittest
@@ -8,6 +8,14 @@ import pandas as pd
 
 from src.baseline import Level0Baseline, get_baseline_instance, predict_demand_fallback
 from src.data_cleaning import get_dataset_diagnostics, inspect_dataset, load_dataset
+from src.eda import (
+    compute_target_distribution,
+    compute_hourly_patterns,
+    compute_seasonal_patterns,
+    compute_weather_patterns,
+    compute_feature_correlations,
+    generate_eda_summary,
+)
 from src.validation import (
     VALID_SEASONS,
     VALID_WEATHER,
@@ -287,6 +295,59 @@ class TestSprint1DatasetSchemaValidation(unittest.TestCase):
         ok_i, errs_i = validate_dataset_record(invalid_rec)
         self.assertFalse(ok_i)
         self.assertGreaterEqual(len(errs_i), 3)
+
+
+class TestSprint1EDA(unittest.TestCase):
+    """Sprint 1C: Verify exploratory data analysis computations and chart outputs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.df = load_dataset("dataset/hour.csv")
+
+    def test_target_distribution_and_outliers(self):
+        dist = compute_target_distribution(self.df)
+        self.assertAlmostEqual(dist["mean"], 189.46, delta=0.1)
+        self.assertEqual(dist["median"], 142.0)
+        self.assertAlmostEqual(dist["skewness"], 1.28, delta=0.05)
+        self.assertEqual(dist["q1"], 40.0)
+        self.assertEqual(dist["q3"], 281.0)
+        self.assertEqual(dist["iqr"], 241.0)
+        self.assertEqual(dist["upper_fence"], 642.5)
+        self.assertEqual(dist["outlier_count"], 505)
+        self.assertAlmostEqual(dist["outlier_pct"], 2.91, delta=0.05)
+
+    def test_hourly_patterns_and_peaks(self):
+        hourly = compute_hourly_patterns(self.df)
+        top_peaks = [h[0] for h in hourly["top_peak_hours"]]
+        self.assertEqual(top_peaks, [17, 18, 8])
+
+        lowest_troughs = [h[0] for h in hourly["lowest_trough_hours"]]
+        self.assertEqual(lowest_troughs, [5, 3, 4])
+
+        # Working days have sharp morning peak at 8 AM
+        self.assertGreater(hourly["workingday_hourly_mean"][8], 400.0)
+        self.assertLess(hourly["nonworkingday_hourly_mean"][8], 150.0)
+
+    def test_seasonal_demand_ordering(self):
+        seasonal = compute_seasonal_patterns(self.df)
+        metrics = {row["season"]: row["mean"] for row in seasonal["season_metrics"]}
+        # Summer (3) is highest demand; Winter (1) is lowest per SRS v1.5
+        self.assertGreater(metrics[3], metrics[4])
+        self.assertGreater(metrics[4], metrics[1])
+        self.assertAlmostEqual(metrics[1], 111.11, delta=0.5)
+
+    def test_weather_demand_reduction(self):
+        weather = compute_weather_patterns(self.df)
+        metrics = {row["weathersit"]: row["mean"] for row in weather["weather_metrics"]}
+        self.assertGreater(metrics[1], metrics[2])
+        self.assertGreater(metrics[2], metrics[3])
+        self.assertGreater(metrics[3], metrics[4])
+
+    def test_feature_correlations(self):
+        corrs = compute_feature_correlations(self.df)
+        self.assertGreater(corrs["temp"], 0.35)
+        self.assertLess(corrs["hum"], -0.25)
+        self.assertGreater(corrs["hr"], 0.35)
 
 
 if __name__ == "__main__":
