@@ -1,6 +1,9 @@
 # Project dataset
 dataset/hour.csv
 
+# Trained model artifacts (regenerated automatically by src/models.py)
+models/
+
 # Virtual environment
 .venv/
 venv/
