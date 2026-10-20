@@ -778,7 +778,7 @@ elif page == "Model Performance":
         st.markdown(
             """
             <div class="velo-card">
-                <div class="velo-card-title">🎯 Actual vs Predicted Demand (L5 Random Forest)</div>
+                <div class="velo-card-title">Actual vs Predicted Demand (L5 Random Forest)</div>
             """,
             unsafe_allow_html=True,
         )
@@ -812,7 +812,7 @@ elif page == "Model Performance":
         st.markdown(
             """
             <div class="velo-card">
-                <div class="velo-card-title">📉 Prediction Error Distribution (L5)</div>
+                <div class="velo-card-title">Prediction Error Distribution (L5 Residuals)</div>
             """,
             unsafe_allow_html=True,
         )
@@ -836,7 +836,7 @@ elif page == "Model Performance":
         st.markdown(
             """
             <div class="velo-card">
-                <div class="velo-card-title">🔍 Residuals vs Predicted (L5)</div>
+                <div class="velo-card-title">Residuals vs Predicted Demand (L5)</div>
             """,
             unsafe_allow_html=True,
         )
@@ -880,13 +880,42 @@ elif page == "Model Performance":
 elif page == "Data Insights":
     render_header("Data Insights", "Explore patterns, distributions, and empirical relationships from the dataset.", "EDA Verified")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Target Distribution (cnt)",
         "Hourly Commute",
         "Seasonal Patterns",
         "Weather Severity",
         "Working Day Split",
         "Feature Correlations",
     ])
+
+    with tab0:
+        st.markdown('<div class="velo-card"><div class="velo-card-title">Target Variable (cnt) Distribution — Positively Skewed (+1.28)</div>', unsafe_allow_html=True)
+        t_dist = compute_target_distribution(df)
+        fig, ax = plt.subplots(figsize=(9, 4.0), facecolor="#FFFFFF")
+        ax.set_facecolor("#FFFFFF")
+        ax.hist(df["cnt"], bins=50, color="#0D9488", edgecolor="white", alpha=0.85)
+        ax.axvline(t_dist["mean"], color="#EF4444", linestyle="--", linewidth=2, label=f"Mean ({t_dist['mean']:.1f})")
+        ax.axvline(t_dist["median"], color="#10B981", linestyle="-", linewidth=2, label=f"Median ({t_dist['median']:.1f})")
+        ax.axvline(t_dist["upper_fence"], color="#F59E0B", linestyle=":", linewidth=2, label=f"IQR Fence ({t_dist['upper_fence']:.1f})")
+        ax.set_xlabel("Hourly Rental Count (cnt)", fontsize=9, color="#64748B")
+        ax.set_ylabel("Frequency (Hours)", fontsize=9, color="#64748B")
+        ax.legend(frameon=True, facecolor="#FFFFFF", edgecolor="#E2E8F0", fontsize=9)
+        ax.grid(True, linestyle="--", alpha=0.3, color="#CBD5E1")
+        for spine in ["top", "right", "left", "bottom"]:
+            ax.spines[spine].set_color("#E2E8F0")
+        fig.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+        st.markdown(
+            f"""
+            <div style="font-size:0.85rem; color:#475569; margin-top:8px;">
+                <strong>Distribution Summary:</strong> Target count is right-skewed (+1.28) with mean (189.5 bikes/hr) exceeding median (142.0 bikes/hr). The upper outlier fence ($Q3 + 1.5 \\times IQR$) is 642.5 bikes. Exactly 505 records (2.91%) exceed this fence (414 on working days, 91 on non-working days), reflecting operational rush-hour capacity surges.
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     with tab1:
         st.markdown('<div class="velo-card"><div class="velo-card-title">Hourly Demand: Commuter Commute vs Weekend Leisure</div>', unsafe_allow_html=True)
