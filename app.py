@@ -55,6 +55,20 @@ st.markdown(
         color: #0F172A !important;
     }
 
+    /* Streamlit App Header & Toolbar: seamless light slate */
+    header[data-testid="stHeader"],
+    .stAppHeader {
+        background-color: #F8FAFC !important;
+        background: #F8FAFC !important;
+        color: #0F172A !important;
+    }
+    header[data-testid="stHeader"] button,
+    header[data-testid="stHeader"] span,
+    header[data-testid="stHeader"] svg {
+        color: #475569 !important;
+        fill: #475569 !important;
+    }
+
     /* Sidebar Styling: Sleek Deep Navy */
     section[data-testid="stSidebar"] {
         background-color: #0F172A !important;
@@ -88,7 +102,7 @@ st.markdown(
 
     /* Container padding */
     .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 4.25rem !important;
         padding-bottom: 3rem !important;
         padding-left: 2.5rem !important;
         padding-right: 2.5rem !important;
@@ -112,6 +126,23 @@ st.markdown(
         display: flex;
         align-items: center;
         gap: 0.5rem;
+    }
+
+    /* Insight Callout Cards */
+    .insight-card {
+        border-left: 3px solid #0D9488;
+        padding-left: 12px;
+        margin-bottom: 12px;
+    }
+    .insight-title {
+        font-weight: 700;
+        color: #0F172A;
+        font-size: 0.92rem;
+    }
+    .insight-desc {
+        color: #64748B;
+        font-size: 0.83rem;
+        line-height: 1.45;
     }
 
     /* Top Page Header */
@@ -477,41 +508,27 @@ if page == "Overview":
 
     with mid_right:
         st.markdown(
-            """
-            <div class="velo-card" style="height:100%;">
-                <div class="velo-card-title">💡 Key Empirical Insights</div>
-                <div style="display:flex; flex-direction:column; gap:14px; margin-top:8px;">
-                    <div style="display:flex; gap:10px; align-items:flex-start;">
-
-                        <div>
-                            <div style="font-weight:700; color:#0F172A; font-size:0.92rem;">Peak Commute Hours</div>
-                            <div style="color:#64748B; font-size:0.83rem;">5:00 PM (461.5 bikes/hr) & 8:00 AM (359.0 bikes/hr). Working days peak at 525.3.</div>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:10px; align-items:flex-start;">
-
-                        <div>
-                            <div style="font-weight:700; color:#0F172A; font-size:0.92rem;">Lowest Demand Trough</div>
-                            <div style="color:#64748B; font-size:0.83rem;">4:00 AM (6.4 bikes/hr) and 3:00 AM (11.7 bikes/hr) during night reset.</div>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:10px; align-items:flex-start;">
-
-                        <div>
-                            <div style="font-weight:700; color:#0F172A; font-size:0.92rem;">Seasonal Variation</div>
-                            <div style="color:#64748B; font-size:0.83rem;">Summer (236.0 bikes/hr) is +112% higher than Winter (111.1 bikes/hr).</div>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:10px; align-items:flex-start;">
-
-                        <div>
-                            <div style="font-weight:700; color:#0F172A; font-size:0.92rem;">Weather Sensitivity</div>
-                            <div style="color:#64748B; font-size:0.83rem;">Clear conditions (204.9 bikes/hr) drop by 45% during Light Rain/Snow (111.6).</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            """,
+            """<div class="velo-card" style="height:100%;">
+<div class="velo-card-title">💡 Key Empirical Insights</div>
+<div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+<div class="insight-card">
+<div class="insight-title">Peak Commute Hours</div>
+<div class="insight-desc">5:00 PM (461.5 bikes/hr) &amp; 8:00 AM (359.0 bikes/hr). Working days peak at 525.3.</div>
+</div>
+<div class="insight-card">
+<div class="insight-title">Lowest Demand Trough</div>
+<div class="insight-desc">4:00 AM (6.4 bikes/hr) and 3:00 AM (11.7 bikes/hr) during night reset.</div>
+</div>
+<div class="insight-card">
+<div class="insight-title">Seasonal Variation</div>
+<div class="insight-desc">Summer (236.0 bikes/hr) is +112% higher than Winter (111.1 bikes/hr).</div>
+</div>
+<div class="insight-card" style="margin-bottom:0;">
+<div class="insight-title">Weather Sensitivity</div>
+<div class="insight-desc">Clear conditions (204.9 bikes/hr) drop by 45% during Light Rain/Snow (111.6).</div>
+</div>
+</div>
+</div>""",
             unsafe_allow_html=True,
         )
 
@@ -734,21 +751,16 @@ elif page == "Model Performance":
         )
 
         # Render styled HTML table
-        rows_html = ""
-        for r in summary_rows:
-            is_best = (r["Level"] == "L5")
-            bg = "#ECFDF5" if is_best else "#FFFFFF"
-            badge = "<span class='status-pill pill-green'>Best</span>" if is_best else ""
-            imp_color = "#059669" if r["Improvement vs L1 (%)"] >= 0 else "#DC2626"
-            rows_html += f"""
-            <tr style="background:{bg}; border-bottom:1px solid #E2E8F0;">
-                <td style="padding:10px 12px; font-weight:700;">{r['Level']}</td>
-                <td style="padding:10px 12px;"><strong>{r['Model / Approach']}</strong><br/><span style="font-size:0.78rem; color:#64748B;">{r['Description']}</span></td>
-                <td style="padding:10px 12px; font-weight:700; text-align:right;">{r['Test MAE']:.2f}</td>
-                <td style="padding:10px 12px; font-weight:600; text-align:right; color:{imp_color};">{r['Improvement vs L1 (%)']:+.2f}%</td>
-                <td style="padding:10px 12px; text-align:center;">{badge}</td>
-            </tr>
-            """
+        rows_html = "".join([
+            f'<tr style="background:{"#ECFDF5" if r["Level"] == "L5" else "#FFFFFF"}; border-bottom:1px solid #E2E8F0;">'
+            f'<td style="padding:10px 12px; font-weight:700;">{r["Level"]}</td>'
+            f'<td style="padding:10px 12px;"><strong>{r["Model / Approach"]}</strong><br/><span style="font-size:0.78rem; color:#64748B;">{r["Description"]}</span></td>'
+            f'<td style="padding:10px 12px; font-weight:700; text-align:right;">{r["Test MAE"]:.2f}</td>'
+            f'<td style="padding:10px 12px; font-weight:600; text-align:right; color:{"#059669" if r["Improvement vs L1 (%)"] >= 0 else "#DC2626"};">{r["Improvement vs L1 (%)"]:+.2f}%</td>'
+            f'<td style="padding:10px 12px; text-align:center;">{"<span class='status-pill pill-green'>Best</span>" if r["Level"] == "L5" else ""}</td>'
+            f'</tr>'
+            for r in summary_rows
+        ])
 
         st.markdown(
             f"""
@@ -1119,7 +1131,7 @@ elif page == "About Project":
                 </p>
                 <ul style="font-size:0.84rem; color:#475569; margin-bottom:0;">
                     <li><strong>Target Variable:</strong> <code>cnt</code> (total hourly rentals, &ge; 0).</li>
-                    <li><strong>Constraint C-2 (Target Leakage):</strong> <code>casual</code> and <code>registered</code> strictly excluded because $casualcasual + registered &equiv; cnt.</li>
+                    <li><strong>Constraint C-2 (Target Leakage):</strong> <code>casual</code> and <code>registered</code> strictly excluded because <code>casual + registered == cnt</code>.</li>
                     <li><strong>Design Decision D6:</strong> <code>yr</code> excluded from candidate predictors to ensure applicability beyond 2012.</li>
                 </ul>
             </div>
