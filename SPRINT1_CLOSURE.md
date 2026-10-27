@@ -4,7 +4,7 @@
 - **Institution:** GLA University, Greater Noida — B.Tech CSE (AI/ML) Second-Year Project
 - **Academic Supervisor:** Mr. Palash Singh Raghuwanshi | **Reviewer:** Mr. Gautam Mukherjee
 - **Specification Source of Truth:** SRS v1.5
-- **Audited Commit Hash:** `0964cf5c9a21f2db9188e53c6b265d14607009cd` (`0964cf5`)
+- **Audited Commit Hash:** `9fee18d369b02f9c9d5c9d51a116a42da9689d6c` (`9fee18d`) / `6c174c9b2320de4a78082fb9179abc2b1d55fe11` (`6c174c9`)
 - **Remote Branch:** `origin/main` on `https://github.com/kushagrapratapsingh-30/smart-bike-rental-demand-advisor`
 - **Closure Recommendation:** **READY TO CLOSE SPRINT 1** (Audit Verified)
 
@@ -14,7 +14,7 @@
 
 Sprint 1 of the **Smart Bike Rental Demand Advisor** project has successfully achieved all core objectives outlined in **SRS v1.5**. The system delivers an end-to-end operational decision-support tool for bike-sharing fleet managers in Washington, D.C. It combines data sanitization, comprehensive exploratory and statistical data analysis, a 6-tier baseline and machine learning evaluation ladder (L0 to L5), real-time Open-Meteo weather integration, and a five-page professional Streamlit dashboard inspired by the VELO design language.
 
-The full test suite (`python -m unittest discover -s tests -v`) runs **52 discovered tests** with **52 passed, 0 skipped, 0 failures, 0 errors** (execution time: 2.882s). All 33 core tests in `test_sprint1.py` and all 19 tests in `test_sprint2.py` (including calendar, weather normalization, split sizes, data leakage prevention, deterministic baseline fallbacks, L4/L5 predictions, and bundle loading integrity) pass cleanly. Windows Smart App Control has validated `_ball_tree.cp314-win_amd64.pyd` as trusted on the host, permitting native Random Forest training and inference. Additionally, robust model-bundle integrity validation ensures that if the application is deployed in an environment where Random Forest is blocked, it gracefully and transparently falls back to L4 (Linear Regression) without fabricating L5 metrics. Bytecode compilation and Git diff whitespace checks pass with zero errors, and the repository is cleanly synchronized with remote `origin/main`.
+The dedicated Sprint 1 test suite (`python -m unittest tests/test_sprint1.py -v`) runs **33 discovered tests** with **33 passed, 0 skipped, 0 failures, 0 errors**. All 33 core tests in `test_sprint1.py` (covering dataset loading, cleaning, schema validation, record-level checks, target distribution, EDA patterns, boundary checks, Level 0 baseline calculations, and error codes) pass cleanly, while the full repository test suite (`python -m unittest discover -s tests -v`) passes all **78 tests** across Sprint 1 and Sprint 2 (33 in `test_sprint1.py` and 45 in `test_sprint2.py`). Windows Smart App Control has validated `_ball_tree.cp314-win_amd64.pyd` as trusted on the host, permitting native Random Forest training and inference. Additionally, robust model-bundle integrity validation ensures that if the application is deployed in an environment where Random Forest is blocked, it gracefully and transparently falls back to L4 (Linear Regression) without fabricating L5 metrics. Bytecode compilation and Git diff whitespace checks pass with zero errors, and the repository is cleanly synchronized with remote `origin/main`.
 
 ---
 
@@ -30,7 +30,7 @@ The full test suite (`python -m unittest discover -s tests -v`) runs **52 discov
 | **Model Management & Ladder** | `src/models.py` | Chronological 80/20 train/test split, L0–L3 grouped mean baselines with cascading fallbacks, L4 Linear Regression, L5 Random Forest Regressor, bundle integrity validation with auto-retraining, and transparent fallbacks. |
 | **Visualization Helpers** | `src/visualization.py` | Reusable Matplotlib plotting routines conforming to the VELO aesthetic. |
 | **VELO Streamlit Dashboard** | `app.py` | 5-page interactive UI (Overview, Demand Predictor, Model Performance, Data Insights, About Project) with dynamic model tags, custom CSS, and zero-indent callouts. |
-| **Full Unit Test Suite** | `tests/test_sprint1.py`<br/>`tests/test_sprint2.py` | 52 discovered tests: **52 passed, 0 skipped, 0 failures, 0 errors**. Covers cleaning, schema validation, EDA, calendar, weather, baselines, L4/L5 models, and bundle loading integrity. |
+| **Sprint 1 Unit Test Suite** | `tests/test_sprint1.py` | 33 discovered tests: **33 passed, 0 skipped, 0 failures, 0 errors**. Covers cleaning, schema validation, EDA, domain bounds, and Level 0 baseline fallback. (Full repository suite: **78 passed** across 33 Sprint 1 and 45 Sprint 2 tests). |
 
 ---
 
@@ -73,8 +73,8 @@ The full test suite (`python -m unittest discover -s tests -v`) runs **52 discov
 
 ### 5.1 Chronological Evaluation Protocol
 - **Split Strategy:** Strict chronological 80/20 train/test split without random shuffling.
-- **Training Set:** Earlier 80.0% of records ($13,903$ rows, 2011-01-01 00:00 to 2012-08-05 05:00).
-- **Held-Out Test Set:** Latest 20.0% of records ($3,476$ rows, 2012-08-05 06:00 to 2012-12-31 23:00).
+- **Training Set:** Earlier 80.0% of records ($13,903$ rows, 2011-01-01 00:00 to 2012-08-07 11:00).
+- **Held-Out Test Set:** Latest 20.0% of records ($3,476$ rows, 2012-08-07 12:00 to 2012-12-31 23:00).
 - **Primary Metric:** Mean Absolute Error (MAE in bikes/hour), providing direct operational interpretability.
 
 $$\text{MAE} = \frac{1}{N} \sum_{i=1}^N |y_i - \hat{y}_i|$$
@@ -143,12 +143,12 @@ To preserve analytical honesty and strictly honor Requirement 4, deliverables an
 | **Chronological Split** | Exactly 13,903 train rows and 3,476 test rows | Array shape inspection in test suite | **VERIFIED** |
 | **Evaluation MAEs** | L0: 174.98, L1: 113.73, L2: 101.55, L3: 95.48, L4: 134.70, L5: 85.19 | Independent reproduction on held-out test split | **VERIFIED** |
 | **Output Bounds** | Non-negative predictions ($\ge 0$) across all models | Verification script & unit tests | **VERIFIED** |
-| **Full Unit Test Suite** | 52 tests across `test_sprint1.py` & `test_sprint2.py` | `python -m unittest discover -s tests -v`: **Ran 52 tests in 2.882s: 52 passed, 0 skipped, 0 failures, 0 errors**. | **VERIFIED (52/52 PASSED)** |
-| **Sprint 1 Unit Tests** | 33 passing unit tests in `test_sprint1.py` | `python -m unittest tests/test_sprint1.py` (`Ran 33 tests in 0.170s — OK`) | **RE-VERIFIED (33/33 PASSED)** |
-| **Sprint 2 Tests** | 19 passing unit tests in `test_sprint2.py` | `python -m unittest tests/test_sprint2.py` (Calendar, Weather, Chronological Split, Leakage, L4/L5 predictions, Fallbacks, Bundle Integrity) | **RE-VERIFIED (19/19 PASSED)** |
-| **Bytecode Compilation** | Zero syntax or indentation errors | `python -m py_compile app.py src/*.py` | **RE-VERIFIED** |
+| **Sprint 1 Unit Tests** | 33 passing unit tests in `test_sprint1.py` | `python -m unittest tests/test_sprint1.py -v`: **Ran 33 tests in 0.277s: 33 passed, 0 skipped, 0 failures, 0 errors**. | **VERIFIED (33/33 PASSED)** |
+| **Sprint 2 Unit Tests** | 45 passing unit tests in `test_sprint2.py` | `python -m unittest tests/test_sprint2.py -v`: **Ran 45 tests in 1.752s: 45 passed, 0 skipped, 0 failures, 0 errors**. Covers calendar, weather normalization, split sizes, data leakage prevention, fallbacks, L4/L5 models, bundle integrity, weather API failure handling, responsive layout, and MAE rendering. | **VERIFIED (45/45 PASSED)** |
+| **Full Repository Test Suite** | 78 tests across `test_sprint1.py` & `test_sprint2.py` | `python -m unittest discover -s tests -v`: **Ran 78 tests in 2.231s: 78 passed, 0 skipped, 0 failures, 0 errors**. | **VERIFIED (78/78 PASSED)** |
+| **Bytecode Compilation** | Zero syntax or indentation errors | `python -m py_compile app.py src/*.py tests/*.py` | **RE-VERIFIED** |
 | **Git Whitespace** | Zero trailing whitespace or formatting conflicts | `git diff --check` | **RE-VERIFIED** |
-| **Git Tracking** | Synchronized with `origin/main` at commit `0964cf5` | `git status -sb` | **RE-VERIFIED** |
+| **Git Tracking** | Synchronized with `origin/main` at commit `6c174c9` | `git status -sb` | **RE-VERIFIED** |
 | **Browser Top Header** | Black strip eliminated; header matches `#F8FAFC`; badges unclipped | User manual browser inspection | **VERIFIED (BROWSER)** |
 | **Browser Insights** | Clean `.insight-card` styling with no raw `<div>` tags | User manual browser inspection | **VERIFIED (BROWSER)** |
 | **Live Open-Meteo API** | HTTP 200 forecast retrieval with fallback on timeout | Unit test mock + live network tests | **VERIFIED** |
@@ -170,6 +170,6 @@ To preserve analytical honesty and strictly honor Requirement 4, deliverables an
 
 ## 9. Conclusion & Recommendation
 
-All functional requirements, architectural constraints, statistical EDA objectives, and UI styling standards defined in **SRS v1.5** are fully implemented, verified, and committed to GitHub `origin/main` at commit `0964cf5`.
+All functional requirements, architectural constraints, statistical EDA objectives, and UI styling standards defined in **SRS v1.5** are fully implemented, verified, and committed to GitHub `origin/main` at commit `6c174c9`.
 
 **Final Recommendation:** **READY TO CLOSE SPRINT 1.**
