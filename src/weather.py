@@ -50,8 +50,8 @@ def map_wmo_code(wmo_code: int) -> Tuple[int, str]:
     """Map Open-Meteo WMO weather code to UCI weathersit class (1-4)."""
     if wmo_code in WMO_CODE_MAP:
         return WMO_CODE_MAP[wmo_code]
-    # For unknown code, default to Class 2 with unverified mapping warning
-    return 2, f"Unverified condition (WMO {wmo_code})"
+    # For unknown code, return 0 to prevent silent coercion per SRS Section 4.3 & TC-11
+    return 0, f"Unknown weather code (WMO {wmo_code})"
 
 
 def normalize_weather_features(
@@ -97,7 +97,7 @@ def fetch_open_meteo_forecast(target_dt: datetime) -> Dict[str, Any]:
 
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as response:
-            if response.status != 200:
+            if getattr(response, "status", 200) != 200:
                 return {
                     "success": False,
                     "status": "weather_api_error",
@@ -105,7 +105,7 @@ def fetch_open_meteo_forecast(target_dt: datetime) -> Dict[str, Any]:
                     "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
                 }
             payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         return {
             "success": False,
             "status": "weather_api_error",
@@ -120,7 +120,40 @@ def fetch_open_meteo_forecast(target_dt: datetime) -> Dict[str, Any]:
             "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
         }
 
+    # Validate payload structure per SRS Section 5.5 (weather_validation_error)
+    if not isinstance(payload, dict) or "hourly" not in payload:
+        return {
+            "success": False,
+            "status": "weather_validation_error",
+            "warning_code": "WARN_API_01",
+            "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
+        }
+
     hourly = payload.get("hourly", {})
+    if not isinstance(hourly, dict):
+        return {
+            "success": False,
+            "status": "weather_validation_error",
+            "warning_code": "WARN_API_01",
+            "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
+        }
+
+    required_fields = [
+        "time",
+        "temperature_2m",
+        "apparent_temperature",
+        "relative_humidity_2m",
+        "wind_speed_10m",
+        "weather_code",
+    ]
+    if not all(k in hourly for k in required_fields):
+        return {
+            "success": False,
+            "status": "weather_validation_error",
+            "warning_code": "WARN_API_01",
+            "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
+        }
+
     times = hourly.get("time", [])
 
     # Target timestamp in ISO format: 'YYYY-MM-DDTHH:00'
@@ -135,11 +168,42 @@ def fetch_open_meteo_forecast(target_dt: datetime) -> Dict[str, Any]:
         }
 
     idx = times.index(target_iso)
-    temp_c = float(hourly["temperature_2m"][idx])
-    atemp_c = float(hourly["apparent_temperature"][idx])
-    hum_pct = float(hourly["relative_humidity_2m"][idx])
-    wind_kmh = float(hourly["wind_speed_10m"][idx])
-    wmo_code = int(hourly["weather_code"][idx])
+    try:
+        raw_temp = hourly["temperature_2m"][idx]
+        raw_atemp = hourly["apparent_temperature"][idx]
+        raw_hum = hourly["relative_humidity_2m"][idx]
+        raw_wind = hourly["wind_speed_10m"][idx]
+        raw_wmo = hourly["weather_code"][idx]
+
+        if any(v is None for v in (raw_temp, raw_atemp, raw_hum, raw_wind, raw_wmo)):
+            return {
+                "success": False,
+                "status": "weather_validation_error",
+                "warning_code": "WARN_API_01",
+                "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
+            }
+
+        temp_c = float(raw_temp)
+        atemp_c = float(raw_atemp)
+        hum_pct = float(raw_hum)
+        wind_kmh = float(raw_wind)
+        wmo_code = int(raw_wmo)
+    except (IndexError, TypeError, ValueError):
+        return {
+            "success": False,
+            "status": "weather_validation_error",
+            "warning_code": "WARN_API_01",
+            "message": "Live weather could not be retrieved. Enter weather manually or use the Level 0 baseline.",
+        }
+
+    # Validate WMO weather code mapping per SRS Section 4.3, Appendix B & TC-11 (WARN_MAP_01)
+    if wmo_code not in WMO_CODE_MAP:
+        return {
+            "success": False,
+            "status": "weather_validation_error",
+            "warning_code": "WARN_MAP_01",
+            "message": f"Unknown weather code (WMO {wmo_code}). Do not silently map; enter weather manually or use Level 0 baseline.",
+        }
 
     weathersit, weather_desc = map_wmo_code(wmo_code)
     normalized = normalize_weather_features(temp_c, atemp_c, hum_pct, wind_kmh)

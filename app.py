@@ -321,6 +321,72 @@ st.markdown(
         transform: translateY(-1px) !important;
         box-shadow: 0 4px 12px rgba(13, 148, 136, 0.35) !important;
     }
+
+    /* Responsive Breakpoints: Tablet (<=768px) and Mobile (<=480px / 390px) */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 3.5rem !important;
+            padding-bottom: 2rem !important;
+            padding-left: 1.25rem !important;
+            padding-right: 1.25rem !important;
+        }
+        .page-header {
+            flex-direction: column !important;
+            gap: 0.75rem !important;
+            align-items: flex-start !important;
+        }
+        .header-badges {
+            flex-wrap: wrap !important;
+        }
+        .page-title {
+            font-size: 1.55rem !important;
+        }
+        .weather-grid {
+            grid-template-columns: repeat(2, 1fr) !important;
+            gap: 0.6rem !important;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .block-container {
+            padding-top: 3rem !important;
+            padding-bottom: 1.5rem !important;
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+        }
+        .page-title {
+            font-size: 1.35rem !important;
+        }
+        .page-subtitle {
+            font-size: 0.85rem !important;
+        }
+        .kpi-card {
+            padding: 1rem !important;
+        }
+        .kpi-value {
+            font-size: 1.65rem !important;
+        }
+        .hero-pred-card {
+            padding: 1.25rem 1.25rem !important;
+        }
+        .hero-pred-val {
+            font-size: 2.5rem !important;
+        }
+        .hero-pred-footer {
+            flex-direction: column !important;
+            gap: 0.6rem !important;
+            align-items: flex-start !important;
+        }
+        .hero-pred-footer div:last-child {
+            text-align: left !important;
+        }
+        .velo-card {
+            padding: 1.1rem 1rem !important;
+        }
+        .tech-stack-grid {
+            grid-template-columns: 1fr !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -410,7 +476,8 @@ def render_header(title: str, subtitle: str, model_tag: str = "Trained (L5)") ->
 # 5. PAGE: OVERVIEW
 # -----------------------------------------------------------------------------
 if page == "Overview":
-    render_header("Overview", "Key metrics, historical data and insights at a glance.", "Trained (L5)")
+    active_tag = "Trained (L5)" if mm.mae_scores.get("L5") is not None else "Active (L4 Fallback)"
+    render_header("Overview", "Key metrics, historical data and insights at a glance.", active_tag)
 
     # 4 Top KPI Cards
     col1, col2, col3, col4 = st.columns(4)
@@ -438,24 +505,38 @@ if page == "Overview":
             unsafe_allow_html=True,
         )
     with col3:
+        if mm.mae_scores.get("L5") is not None:
+            active_model_name = "L5 Regressor"
+            active_model_sub = "Random Forest (100 Trees)"
+        else:
+            active_model_name = "L4 Regressor"
+            active_model_sub = "Multiple Linear Reg. (L5 unavailable on host)"
         st.markdown(
-            """
+            f"""
             <div class="kpi-card">
                 <div class="kpi-label">Active Model</div>
-                <div class="kpi-value" style="font-size:1.75rem;">L5 Regressor</div>
-                <div class="kpi-subtext">Random Forest (100 Trees)</div>
+                <div class="kpi-value" style="font-size:1.75rem;">{active_model_name}</div>
+                <div class="kpi-subtext">{active_model_sub}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with col4:
-        best_mae = mm.mae_scores["L5"]
+        best_mae = mm.mae_scores.get("L5")
+        if best_mae is not None:
+            best_mae_label = "MAE (L5 Best)"
+            best_mae_val = f"{best_mae:.1f}"
+            best_mae_sub = "bikes / hour (held-out test split)"
+        else:
+            best_mae_label = "MAE (L4 Active)"
+            best_mae_val = f"{mm.mae_scores['L4']:.1f}"
+            best_mae_sub = "bikes / hour (L5 unavailable on host)"
         st.markdown(
             f"""
             <div class="kpi-card">
-                <div class="kpi-label">MAE (L5 Best)</div>
-                <div class="kpi-value">{best_mae:.1f}</div>
-                <div class="kpi-subtext">bikes / hour (held-out test split)</div>
+                <div class="kpi-label">{best_mae_label}</div>
+                <div class="kpi-value">{best_mae_val}</div>
+                <div class="kpi-subtext">{best_mae_sub}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -555,7 +636,8 @@ if page == "Overview":
 # 6. PAGE: DEMAND PREDICTOR
 # -----------------------------------------------------------------------------
 elif page == "Demand Predictor":
-    render_header("Demand Predictor", "Estimate the number of bikes needed for selected operational conditions.", "Trained (L5)")
+    predictor_tag = "Trained (L5)" if mm.mae_scores.get("L5") is not None else "Active (L4 Fallback)"
+    render_header("Demand Predictor", "Estimate the number of bikes needed for selected operational conditions.", predictor_tag)
 
     col_input, col_result = st.columns([1.1, 1.3], gap="large")
 
@@ -734,7 +816,8 @@ elif page == "Demand Predictor":
 # 7. PAGE: MODEL PERFORMANCE
 # -----------------------------------------------------------------------------
 elif page == "Model Performance":
-    render_header("Model Performance", "Evaluation results and model comparison across all six tiers (L0–L5).", "Evaluated (L0–L5)")
+    perf_tag = "Evaluated (L0–L5)" if mm.mae_scores.get("L5") is not None else "Evaluated (L0–L4, L5 Fallback)"
+    render_header("Model Performance", "Evaluation results and model comparison across all six tiers (L0–L5).", perf_tag)
 
     summary_rows = mm.get_summary_table()
     table_df = pd.DataFrame(summary_rows)
@@ -751,20 +834,36 @@ elif page == "Model Performance":
         )
 
         # Render styled HTML table
+        def _fmt_mae(score):
+            return f"{score:.2f}" if score is not None else "N/A*"
+
+        def _fmt_imp(imp):
+            if imp is None:
+                return '<span style="color:#64748B;">N/A*</span>'
+            color = "#059669" if imp >= 0 else "#DC2626"
+            return f'<span style="color:{color}; font-weight:600;">{imp:+.2f}%</span>'
+
+        rf_active = mm.mae_scores.get("L5") is not None
         rows_html = "".join([
-            f'<tr style="background:{"#ECFDF5" if r["Level"] == "L5" else "#FFFFFF"}; border-bottom:1px solid #E2E8F0;">'
+            f'<tr style="background:{"#ECFDF5" if r["Level"] == ("L5" if rf_active else "L3") else "#FFFFFF"}; border-bottom:1px solid #E2E8F0;">'
             f'<td style="padding:10px 12px; font-weight:700;">{r["Level"]}</td>'
             f'<td style="padding:10px 12px;"><strong>{r["Model / Approach"]}</strong><br/><span style="font-size:0.78rem; color:#64748B;">{r["Description"]}</span></td>'
-            f'<td style="padding:10px 12px; font-weight:700; text-align:right;">{r["Test MAE"]:.2f}</td>'
-            f'<td style="padding:10px 12px; font-weight:600; text-align:right; color:{"#059669" if r["Improvement vs L1 (%)"] >= 0 else "#DC2626"};">{r["Improvement vs L1 (%)"]:+.2f}%</td>'
-            f'<td style="padding:10px 12px; text-align:center;">{"<span class='status-pill pill-green'>Best</span>" if r["Level"] == "L5" else ""}</td>'
+            f'<td style="padding:10px 12px; font-weight:700; text-align:right;">{_fmt_mae(r["Test MAE"])}</td>'
+            f'<td style="padding:10px 12px; text-align:right;">{_fmt_imp(r["Improvement vs L1 (%)"])}</td>'
+            f'<td style="padding:10px 12px; text-align:center;">{"<span class=\'status-pill pill-green\'>Best ML</span>" if (r["Level"] == "L5" and rf_active) else ("<span class=\'status-pill pill-green\'>Best Baseline</span>" if r["Level"] == "L3" else "")}</td>'
             f'</tr>'
             for r in summary_rows
         ])
 
+        l5_footnote = (
+            "<br/>* <strong>Host Environment Notice:</strong> L5 (Random Forest) was not evaluated on this system because Windows Application Control policy blocked the scikit-learn binary <code>_ball_tree</code>. L5 inference requests deterministically fall back to L4."
+            if not rf_active else " L5 (Random Forest) achieves the lowest test MAE (85.19 bikes/hr)."
+        )
+
         st.markdown(
             f"""
-            <table style="width:100%; border-collapse:collapse; font-size:0.86rem; color:#0F172A;">
+            <div style="overflow-x:auto; -webkit-overflow-scrolling:touch; width:100%; margin-bottom:8px;">
+            <table style="width:100%; border-collapse:collapse; font-size:0.86rem; color:#0F172A; min-width:380px;">
                 <thead>
                     <tr style="background:#F1F5F9; border-bottom:2px solid #CBD5E1; text-align:left; color:#475569;">
                         <th style="padding:8px 12px;">Level</th>
@@ -778,8 +877,9 @@ elif page == "Model Performance":
                     {rows_html}
                 </tbody>
             </table>
+            </div>
             <div style="font-size:0.8rem; color:#64748B; margin-top:10px;">
-                * <strong>Evaluation Protocol:</strong> Strict chronological 80/20 train/test split per SRS Section 3.2. L4 (Linear Regression) underperforms L1 because commuter hourly spikes are inherently non-linear. L5 (Random Forest) achieves the lowest test MAE (85.19 bikes/hr).
+                * <strong>Evaluation Protocol:</strong> Strict chronological 80/20 train/test split per SRS Section 3.2. L4 (Linear Regression) underperforms L1 because commuter hourly spikes are inherently non-linear.{l5_footnote}
             </div>
             </div>
             """,
@@ -787,17 +887,23 @@ elif page == "Model Performance":
         )
 
     with top_col2:
+        chart_model_level = "L5" if mm.predictions.get("L5") is not None else ("L4" if mm.predictions.get("L4") is not None else "L0")
+        chart_model_title = (
+            "Actual vs Predicted Demand (L5 Random Forest)"
+            if chart_model_level == "L5"
+            else ("Actual vs Predicted Demand (L4 Linear Regression - L5 Unavailable)" if chart_model_level == "L4" else "Actual vs Predicted Demand (L0 Baseline Fallback)")
+        )
         st.markdown(
-            """
+            f"""
             <div class="velo-card">
-                <div class="velo-card-title">Actual vs Predicted Demand (L5 Random Forest)</div>
+                <div class="velo-card-title">{chart_model_title}</div>
             """,
             unsafe_allow_html=True,
         )
         # Subsample 250 test points for clean visualization
         sub_indices = np.linspace(0, len(mm.y_test) - 1, 250, dtype=int)
         y_sub_act = mm.y_test[sub_indices]
-        y_sub_pred = mm.predictions["L5"][sub_indices]
+        y_sub_pred = mm.predictions[chart_model_level][sub_indices]
 
         fig, ax = plt.subplots(figsize=(6.5, 4.3), facecolor="#FFFFFF")
         ax.set_facecolor("#FFFFFF")
@@ -821,14 +927,19 @@ elif page == "Model Performance":
     b_col1, b_col2, b_col3 = st.columns([1, 1, 1], gap="medium")
 
     with b_col1:
+        res_model_title = (
+            "Prediction Error Distribution (L5 Residuals)"
+            if chart_model_level == "L5"
+            else ("Prediction Error Distribution (L4 Residuals - L5 Unavailable)" if chart_model_level == "L4" else "Prediction Error Distribution (L0 Residuals)")
+        )
         st.markdown(
-            """
+            f"""
             <div class="velo-card">
-                <div class="velo-card-title">Prediction Error Distribution (L5 Residuals)</div>
+                <div class="velo-card-title">{res_model_title}</div>
             """,
             unsafe_allow_html=True,
         )
-        errors = mm.y_test - mm.predictions["L5"]
+        errors = mm.y_test - mm.predictions[chart_model_level]
         fig, ax = plt.subplots(figsize=(5, 3.4), facecolor="#FFFFFF")
         ax.set_facecolor("#FFFFFF")
         ax.hist(errors, bins=35, color="#14B8A6", edgecolor="#FFFFFF", alpha=0.85)
@@ -845,10 +956,15 @@ elif page == "Model Performance":
         st.markdown("</div>", unsafe_allow_html=True)
 
     with b_col2:
+        res_vs_pred_title = (
+            "Residuals vs Predicted Demand (L5)"
+            if chart_model_level == "L5"
+            else ("Residuals vs Predicted Demand (L4 - L5 Unavailable)" if chart_model_level == "L4" else "Residuals vs Predicted Demand (L0)")
+        )
         st.markdown(
-            """
+            f"""
             <div class="velo-card">
-                <div class="velo-card-title">Residuals vs Predicted Demand (L5)</div>
+                <div class="velo-card-title">{res_vs_pred_title}</div>
             """,
             unsafe_allow_html=True,
         )
@@ -1161,7 +1277,7 @@ elif page == "About Project":
             """
             <div class="velo-card" style="height:100%;">
                 <div class="velo-card-title">Technology Stack</div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:0.84rem; color:#334155;">
+                <div class="tech-stack-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:0.84rem; color:#334155;">
                     <div>• <strong>Python 3.14</strong> (Core runtime)</div>
                     <div>• <strong>Pandas & NumPy</strong> (Data wrangling)</div>
                     <div>• <strong>Scikit-Learn</strong> (L4 LR & L5 RF)</div>
@@ -1184,15 +1300,13 @@ elif page == "About Project":
             <div class="velo-card" style="height:100%;">
                 <div class="velo-card-title">Evaluation Metric: MAE</div>
                 <p style="font-size:0.88rem; color:#334155; line-height:1.6;">
-                    <strong>Mean Absolute Error (MAE)</strong> is chosen as the primary metric because it is directly interpretable in operational units (bikes per hour), unlike MSE or RMSE which square the errors and over-penalize rush-hour variance.
+                    <strong>Mean Absolute Error (MAE)</strong> is chosen as the primary metric because it is directly interpretable in operational units (bikes per hour), unlike MSE or RMSE which square the errors and over-penalize rush-hour variance. MAE measures the average absolute difference between actual and predicted rental counts:
                 </p>
-                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:8px 12px; font-size:0.84rem; color:#0F172A;">
-                    $$\\text{MAE} = \\frac{1}{N} \\sum_{i=1}^N |y_i - \\hat{y}_i|$$
-                </div>
-            </div>
             """,
             unsafe_allow_html=True,
         )
+        st.latex(r"\text{MAE} = \frac{1}{n} \sum_{i=1}^n |y_i - \hat{y}_i|")
+        st.markdown("</div>", unsafe_allow_html=True)
     with r3_col2:
         st.markdown(
             """
