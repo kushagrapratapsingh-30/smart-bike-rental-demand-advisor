@@ -4,7 +4,7 @@
 - **Institution:** GLA University, Greater Noida — B.Tech CSE (AI/ML) Second-Year Project
 - **Academic Supervisor:** Mr. Palash Singh Raghuwanshi | **Reviewer:** Mr. Gautam Mukherjee
 - **Specification Source of Truth:** SRS v1.5
-- **Working Branch:** `main` tracking `origin/main` (Base Commit: `9fee18d`)
+- **Working Branch:** `main` tracking `origin/main` (Base Commit: `6c174c9b2320de4a78082fb9179abc2b1d55fe11` (`6c174c9`) / `e6bab936b47d8c666fa15130062fdfceeffdcb1f` (`e6bab93`))
 - **Closure Recommendation:** **READY TO CLOSE SPRINT 2** (Audit Verified)
 
 ---
