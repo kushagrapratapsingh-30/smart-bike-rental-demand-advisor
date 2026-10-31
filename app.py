@@ -26,6 +26,7 @@ from src.eda import (
     compute_weather_patterns,
 )
 from src.models import FEATURE_COLUMNS, get_model_manager
+from src.prediction_service import predict_demand_workflow
 from src.validation import VALID_SEASONS, VALID_WEATHER, VALID_WORKING_DAY, validate_inputs
 from src.weather import fetch_open_meteo_forecast, map_wmo_code, normalize_weather_features
 
@@ -665,11 +666,8 @@ elif page == "Demand Predictor":
             unsafe_allow_html=True,
         )
 
-        # Live Weather Retrieval from Open-Meteo
-        weather_res = fetch_open_meteo_forecast(target_dt)
-        is_live_weather = weather_res["success"]
-
-        use_manual_weather = st.checkbox("Manual Weather Override", value=not is_live_weather, help="Check to manually specify weather parameters instead of Open-Meteo.")
+        # Manual Weather Override
+        use_manual_weather = st.checkbox("Manual Weather Override", value=False, help="Check to manually specify weather parameters instead of Open-Meteo.")
 
         if use_manual_weather:
             st.info("Manual Weather Override enabled. Enter conditions below:")
@@ -677,37 +675,11 @@ elif page == "Demand Predictor":
             m_hum = st.slider("Humidity (%)", min_value=0, max_value=100, value=55)
             m_wind = st.number_input("Wind Speed (km/h)", min_value=0.0, max_value=70.0, value=12.0, step=1.0)
             m_cond = st.selectbox("Weather Condition", ["Clear", "Mist/Cloudy", "Light Rain/Snow", "Heavy Rain"])
-            weather_code = VALID_WEATHER[m_cond]
-            norm_weather = normalize_weather_features(m_temp, m_temp - 2.0, float(m_hum), m_wind)
-            norm_weather["weathersit"] = weather_code
-            raw_weather = {
-                "temperature_c": m_temp,
-                "apparent_temperature_c": m_temp - 2.0,
-                "humidity_pct": m_hum,
-                "wind_speed_kmh": m_wind,
-                "weather_desc": m_cond,
-                "weathersit": weather_code,
-            }
-            weather_source_label = "Manual Input (Labelled Fallback)"
         else:
-            if is_live_weather:
-                raw_weather = weather_res["raw_weather"]
-                norm_weather = weather_res["normalized_weather"]
-                weather_source_label = "Open-Meteo Forecast API (Live)"
-            else:
-                st.warning(f"⚠️ {weather_res['warning_code']}: {weather_res['message']}")
-                # Default fallback
-                raw_weather = {
-                    "temperature_c": 18.0,
-                    "apparent_temperature_c": 18.0,
-                    "humidity_pct": 50.0,
-                    "wind_speed_kmh": 10.0,
-                    "weather_desc": "Clear (Fallback)",
-                    "weathersit": 1,
-                }
-                norm_weather = normalize_weather_features(18.0, 18.0, 50.0, 10.0)
-                norm_weather["weathersit"] = 1
-                weather_source_label = "Historical Average Fallback"
+            m_temp = 20.0
+            m_hum = 55
+            m_wind = 12.0
+            m_cond = "Clear"
 
         # Model Level Selector
         model_level = st.selectbox(
@@ -722,81 +694,163 @@ elif page == "Demand Predictor":
         predict_btn = st.button("Predict Demand", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
+        if predict_btn:
+            manual_weather_data = {
+                "temperature_c": m_temp,
+                "apparent_temperature_c": m_temp - 2.0,
+                "humidity_pct": m_hum,
+                "wind_speed_kmh": m_wind,
+                "weather_desc": m_cond,
+            } if use_manual_weather else None
+
+            workflow_result = predict_demand_workflow(
+                target_date=selected_date,
+                target_hour=selected_hour_idx,
+                model_level=model_level,
+                use_manual_weather=use_manual_weather,
+                manual_weather=manual_weather_data,
+                model_manager=mm,
+            )
+            st.session_state["prediction_result"] = workflow_result
+
     with col_result:
-        # Weather Details Card
-        st.markdown(
-            f"""
-            <div class="velo-card">
-                <div class="velo-card-title">
-                    <span>Weather Details</span>
-                    <span class="status-pill pill-blue" style="margin-left:auto; font-size:0.75rem;">{weather_source_label}</span>
+        res = st.session_state.get("prediction_result")
+
+        if res is None:
+            st.markdown(
+                """
+                <div class="velo-card" style="text-align:center; padding: 48px 24px;">
+                    <div style="font-size: 2.4rem; margin-bottom: 12px;">🚲</div>
+                    <div class="velo-card-title" style="justify-content:center; margin-bottom:8px; font-size:1.15rem;">Ready to Advise Demand</div>
+                    <p style="color:#64748B; font-size:0.92rem; max-width:440px; margin: 0 auto 16px auto; line-height:1.5;">
+                        Configure your target operational date, hour, weather preferences, and model level on the left, then click <strong>Predict Demand</strong> to generate an estimate.
+                    </p>
+                    <span class="status-pill pill-blue">Awaiting Submission</span>
                 </div>
-                <div class="weather-grid">
-                    <div class="weather-tile">
-                        <div class="weather-tile-lbl">Temperature</div>
-                        <div class="weather-tile-val">{raw_weather['temperature_c']:.1f}°C</div>
-                    </div>
-                    <div class="weather-tile">
-                        <div class="weather-tile-lbl">Humidity</div>
-                        <div class="weather-tile-val">{raw_weather['humidity_pct']:.0f}%</div>
-                    </div>
-                    <div class="weather-tile">
-                        <div class="weather-tile-lbl">Wind Speed</div>
-                        <div class="weather-tile-val">{raw_weather['wind_speed_kmh']:.1f} km/h</div>
-                    </div>
-                    <div class="weather-tile">
-                        <div class="weather-tile-lbl">Condition</div>
-                        <div class="weather-tile-val" style="font-size:1.05rem;">{raw_weather['weather_desc']}</div>
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+                """,
+                unsafe_allow_html=True,
+            )
+        elif not res.get("success", False):
+            # Failure handling per SRS Section 5.4, 5.5
+            fail_status = res.get("status")
+            err_code = res.get("error_code")
+            warn_code = res.get("warning_code")
+            msg = res.get("message", "An error occurred.")
+            req_id = res.get("request_id", "N/A")
 
-        # Build feature vector
-        feature_dict = {
-            "season": cal["season"],
-            "mnth": cal["mnth"],
-            "hr": cal["hr"],
-            "holiday": cal["holiday"],
-            "weekday": cal["weekday"],
-            "workingday": cal["workingday"],
-            "weathersit": norm_weather["weathersit"],
-            "temp": norm_weather["temp"],
-            "atemp": norm_weather["atemp"],
-            "hum": norm_weather["hum"],
-            "windspeed": norm_weather["windspeed"],
-        }
+            if fail_status == "validation_error":
+                st.error(f"⛔ **Validation Error ({err_code}):** {msg}")
+            elif fail_status == "historical_weather_unavailable":
+                st.warning(f"⚠️ **Historical Date Notice:** {msg}")
+            elif fail_status == "unsupported_time":
+                st.warning(f"⚠️ **Forecast Horizon Notice ({warn_code}):** {msg}")
+            elif fail_status in ("weather_api_error", "weather_validation_error"):
+                st.warning(f"⚠️ **Weather Retrieval Notice ({warn_code}):** {msg}")
+            elif fail_status == "prediction_error":
+                st.error(f"❌ **System Error ({err_code}):** {msg}")
+            else:
+                st.error(f"❌ **Execution Error:** {msg}")
 
-        # Predict
-        pred_res = mm.predict(model_level, feature_dict)
-        pred_count = pred_res["predicted_cnt"]
-        pred_mae = pred_res["mae"]
-        method_name = f"{pred_res['used_level']} — {mm.get_summary_table()[['L0','L1','L2','L3','L4','L5'].index(pred_res['used_level'])]['Model / Approach']}"
-
-        st.markdown(
-            f"""
-            <div class="hero-pred-card">
-                <div class="hero-pred-header">Estimated Hourly Demand</div>
-                <div class="hero-pred-val">{pred_count} <span class="hero-pred-unit">bikes / hour</span></div>
-                <div class="hero-pred-footer">
-                    <div>
-                        <div style="font-weight:700;">Prediction Method:</div>
-                        <div style="color:#CCFBF1;">{method_name}</div>
+            st.markdown(
+                f"""
+                <div class="velo-card" style="border-left: 4px solid #F59E0B; margin-top:16px;">
+                    <div class="velo-card-title">
+                        <span>Execution Status: {fail_status}</span>
+                        <span class="status-pill pill-amber" style="margin-left:auto;">{warn_code or err_code or 'Failure'}</span>
                     </div>
-                    <div style="text-align:right;">
-                        <div style="font-weight:700;">Historical Test MAE:</div>
-                        <div style="color:#CCFBF1;">± {pred_mae:.1f} bikes / hour</div>
+                    <p style="font-size:0.88rem; color:#475569; margin:8px 0; line-height:1.5;">
+                        Per SRS v1.5 Section 5.4, no unverified prediction was fabricated. You may check <strong>Manual Weather Override</strong> or select the <strong>Level 0 Baseline</strong> to generate an estimate.
+                    </p>
+                    <div style="font-size:0.80rem; color:#64748B; margin-top:8px;">
+                        <strong>Audit Request ID:</strong> <code style="background:#F1F5F9; padding:2px 6px; border-radius:4px;">{req_id}</code>
                     </div>
                 </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            # Successful prediction rendering
+            raw_weather = res.get("raw_weather")
+            weather_source_label = res.get("weather_source", "Unknown Source")
 
-        if pred_res["fallback_note"]:
-            st.warning(f"⚠️ **Baseline Fallback Notice:** {pred_res['fallback_note']}")
+            if raw_weather:
+                st.markdown(
+                    f"""
+                    <div class="velo-card">
+                        <div class="velo-card-title">
+                            <span>Weather Details</span>
+                            <span class="status-pill pill-blue" style="margin-left:auto; font-size:0.75rem;">{weather_source_label}</span>
+                        </div>
+                        <div class="weather-grid">
+                            <div class="weather-tile">
+                                <div class="weather-tile-lbl">Temperature</div>
+                                <div class="weather-tile-val">{raw_weather['temperature_c']:.1f}°C</div>
+                            </div>
+                            <div class="weather-tile">
+                                <div class="weather-tile-lbl">Humidity</div>
+                                <div class="weather-tile-val">{raw_weather['humidity_pct']:.0f}%</div>
+                            </div>
+                            <div class="weather-tile">
+                                <div class="weather-tile-lbl">Wind Speed</div>
+                                <div class="weather-tile-val">{raw_weather['wind_speed_kmh']:.1f} km/h</div>
+                            </div>
+                            <div class="weather-tile">
+                                <div class="weather-tile-lbl">Condition</div>
+                                <div class="weather-tile-val" style="font-size:1.05rem;">{raw_weather['weather_desc']}</div>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div class="velo-card">
+                        <div class="velo-card-title">
+                            <span>Execution Tier</span>
+                            <span class="status-pill pill-blue" style="margin-left:auto; font-size:0.75rem;">{weather_source_label}</span>
+                        </div>
+                        <p style="font-size:0.88rem; color:#64748B; margin:6px 0;">
+                            Historical global baseline execution (Level 0). Independent of real-time weather features.
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            pred_count = res["predicted_cnt"]
+            pred_mae = res.get("mae")
+            used_level = res.get("used_level", "L0")
+            method_desc = mm.get_summary_table()[['L0','L1','L2','L3','L4','L5'].index(used_level)]['Model / Approach']
+            method_name = f"{used_level} — {method_desc}"
+            mae_str = f"± {pred_mae:.1f} bikes / hour" if pred_mae is not None else "N/A*"
+
+            st.markdown(
+                f"""
+                <div class="hero-pred-card">
+                    <div class="hero-pred-header">Estimated Hourly Demand</div>
+                    <div class="hero-pred-val">{pred_count} <span class="hero-pred-unit">bikes / hour</span></div>
+                    <div class="hero-pred-footer">
+                        <div>
+                            <div style="font-weight:700;">Prediction Method:</div>
+                            <div style="color:#CCFBF1;">{method_name}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-weight:700;">Historical Test MAE:</div>
+                            <div style="color:#CCFBF1;">{mae_str}</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:10px; font-size:0.75rem; color:#94A3B8; text-align:right; border-top:1px solid rgba(255,255,255,0.1); padding-top:6px;">
+                        Request ID: <code style="color:#CCFBF1; background:transparent;">{res.get('request_id', '')}</code>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            if res.get("fallback_note"):
+                st.warning(f"⚠️ **Baseline Fallback Notice:** {res['fallback_note']}")
 
         # Required Disclaimer Card
         st.markdown(
