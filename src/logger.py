@@ -147,7 +147,8 @@ class ExecutionLogger:
                         if not line:
                             continue
                         try:
-                            entries.append(json.loads(line))
+                            record = json.loads(line)
+                            entries.append(sanitize_payload(record))
                         except Exception:
                             continue
         except Exception:

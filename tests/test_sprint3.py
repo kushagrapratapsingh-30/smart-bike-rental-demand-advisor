@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 import json
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 import uuid
@@ -1143,6 +1144,447 @@ class TestSprint3PredictionLifecycleAndUI(unittest.TestCase):
         self.assertEqual(len(log_ids), 24, "All 24 log IDs must be strictly unique")
         # Set intersection between log_ids and req_ids must be empty
         self.assertTrue(req_ids.isdisjoint(log_ids), "Request IDs and Log IDs must never overlap")
+
+
+class TestSprint3LoggingAndAuditVerification(unittest.TestCase):
+    """Exhaustive audit verification tests for Sprint 3 Phase 4.
+
+    Covers Section 5 through 11:
+    - 12-field schema compliance (SRS Table 9.4)
+    - Valid JSON serialization and line separation
+    - RFC 4122 UUID v4 formatting and validity
+    - Log ID uniqueness and request ID correlation
+    - Recursive redaction across nested dictionaries and lists
+    - Input immutability and non-sensitive preservation
+    - Concurrent multithreaded append safety and zero record loss
+    - Append-only integrity and history preservation
+    - Failure and failsafe resilience (no crashes on disk errors)
+    - Recent log retrieval ordering, limit, corrupt-line recovery, and redaction
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.log_path = os.path.join(self.temp_dir.name, "audit_test.jsonl")
+        self.logger = ExecutionLogger(log_path=self.log_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _read_raw_lines(self):
+        if not os.path.exists(self.log_path):
+            return []
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def _read_parsed_records(self):
+        return [json.loads(line) for line in self._read_raw_lines()]
+
+    def test_audit_01_exact_12_field_schema(self):
+        """1. Exact 12-field schema: every record contains exactly the 12 Table 9.4 keys, no more, no less."""
+        expected_fields = {
+            "log_id",
+            "request_id",
+            "timestamp",
+            "requested_datetime",
+            "status",
+            "error_code",
+            "weather_source",
+            "api_status",
+            "input_vector",
+            "predicted_cnt",
+            "model_level",
+            "model_version",
+        }
+        rec = self.logger.log_execution(
+            status="ok",
+            requested_datetime="2026-11-02T14:00",
+            predicted_cnt=250,
+            model_level="L5",
+            weather_source="Open-Meteo Forecast API (Live)",
+            api_status="200",
+        )
+        self.assertEqual(set(rec.keys()), expected_fields, "Logged record must have exactly the 12 Table 9.4 fields")
+        self.assertEqual(len(rec.keys()), 12)
+
+        file_records = self._read_parsed_records()
+        self.assertEqual(len(file_records), 1)
+        self.assertEqual(set(file_records[0].keys()), expected_fields)
+        self.assertEqual(len(file_records[0].keys()), 12)
+
+    def test_audit_02_valid_json_serialization(self):
+        """2. Valid JSON serialization: each record occupies exactly one valid, parseable JSONL line."""
+        for i in range(5):
+            self.logger.log_execution(
+                status="ok",
+                requested_datetime=f"2026-11-02T{10+i:02d}:00",
+                predicted_cnt=100 + i * 20,
+                model_level="L4",
+            )
+
+        raw_lines = self._read_raw_lines()
+        self.assertEqual(len(raw_lines), 5)
+        for idx, line in enumerate(raw_lines):
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as e:
+                self.fail(f"Line {idx} failed JSON deserialization: {e}")
+            self.assertEqual(data["model_level"], "L4")
+
+    def test_audit_03_uuid_v4_validity(self):
+        """3. UUID v4 validity: log_id and request_id strictly adhere to RFC 4122 UUID v4 formatting."""
+        rec = self.logger.log_execution(
+            status="ok",
+            requested_datetime="2026-11-02T12:00",
+            predicted_cnt=300,
+            model_level="L5",
+        )
+        self.assertTrue(is_valid_uuid4(rec["log_id"]), f"log_id '{rec['log_id']}' is not a valid UUID v4")
+        self.assertTrue(is_valid_uuid4(rec["request_id"]), f"request_id '{rec['request_id']}' is not a valid UUID v4")
+
+        # Test invalid inputs to request_id are safely replaced with fresh valid UUID v4
+        invalid_ids = ["not-a-uuid", "12345", "", None, 9999, "123e4567-e89b-12d3-a456-426614174000"]
+        for bad_id in invalid_ids:
+            bad_rec = self.logger.log_execution(status="ok", request_id=bad_id)
+            self.assertTrue(is_valid_uuid4(bad_rec["request_id"]), f"Failed to normalize invalid request_id '{bad_id}'")
+            self.assertNotEqual(bad_rec["request_id"], str(bad_id))
+
+    def test_audit_04_unique_log_ids(self):
+        """4. Unique log IDs: all log_id values across 100 consecutive records are strictly unique."""
+        seen_ids = set()
+        for i in range(100):
+            rec = self.logger.log_execution(
+                status="ok",
+                requested_datetime="2026-11-02T10:00",
+                predicted_cnt=150,
+                model_level="L0",
+            )
+            self.assertNotIn(rec["log_id"], seen_ids, "Duplicate log_id generated")
+            seen_ids.add(rec["log_id"])
+
+        self.assertEqual(len(seen_ids), 100)
+
+    def test_audit_05_request_id_correlation(self):
+        """5. Request ID correlation: multiple operations under the same request retain identical request_id."""
+        shared_req_id = str(uuid.uuid4())
+        rec1 = self.logger.log_execution(
+            status="ok",
+            request_id=shared_req_id,
+            requested_datetime="2026-11-02T12:00",
+            weather_source="Open-Meteo Forecast API",
+            api_status="200",
+        )
+        rec2 = self.logger.log_execution(
+            status="ok",
+            request_id=shared_req_id,
+            requested_datetime="2026-11-02T12:00",
+            predicted_cnt=320,
+            model_level="L5",
+        )
+
+        self.assertEqual(rec1["request_id"], shared_req_id)
+        self.assertEqual(rec2["request_id"], shared_req_id)
+        self.assertNotEqual(rec1["log_id"], rec2["log_id"], "Distinct log entries must have distinct log_ids")
+
+    def test_audit_06_recursive_redaction(self):
+        """6. Recursive redaction: all representative sensitive keys are masked recursively."""
+        sensitive_payload = {
+            "password": "plain-text-pwd",
+            "token": "secret-jwt-token",
+            "api_key": "open-meteo-fake-key",
+            "secret": "db-secret",
+            "authorization": "Bearer xyz123",
+            "access_token": "oauth-access-token",
+            "refresh_token": "oauth-refresh-token",
+            "nested_config": {
+                "admin_password": "super-secret-password",
+                "auth_bearer": "bearer-token-abc",
+            },
+        }
+
+        sanitized = sanitize_payload(sensitive_payload)
+        for key in ["password", "token", "api_key", "secret", "authorization", "access_token", "refresh_token"]:
+            self.assertEqual(sanitized[key], "[REDACTED]", f"Key '{key}' was not redacted")
+        self.assertEqual(sanitized["nested_config"]["admin_password"], "[REDACTED]")
+        self.assertEqual(sanitized["nested_config"]["auth_bearer"], "[REDACTED]")
+
+        # Log and verify file serialization contains zero raw secret values
+        self.logger.log_execution(
+            status="ok",
+            input_vector=sensitive_payload,
+        )
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            raw_content = f.read()
+        self.assertNotIn("plain-text-pwd", raw_content)
+        self.assertNotIn("secret-jwt-token", raw_content)
+        self.assertNotIn("open-meteo-fake-key", raw_content)
+        self.assertNotIn("super-secret-password", raw_content)
+
+    def test_audit_07_nested_dictionary_redaction(self):
+        """7. Nested dictionary redaction: deeply nested dictionaries mask case-insensitive sensitive keys."""
+        deep_dict = {
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "API_KEY": "KEY-12345",
+                        "Secret_Token": "TOKEN-67890",
+                        "safe_field": 42.0,
+                    }
+                }
+            }
+        }
+        res = sanitize_payload(deep_dict)
+        l3 = res["level1"]["level2"]["level3"]
+        self.assertEqual(l3["API_KEY"], "[REDACTED]")
+        self.assertEqual(l3["Secret_Token"], "[REDACTED]")
+        self.assertEqual(l3["safe_field"], 42.0)
+
+    def test_audit_08_nested_list_redaction(self):
+        """8. Nested list redaction: sensitive keys inside lists and tuples are masked."""
+        list_payload = {
+            "users": [
+                {"username": "alice", "auth_token": "token-alice"},
+                {"username": "bob", "credential_hash": "hash-bob"},
+            ],
+            "headers": [
+                ["Authorization", "Basic dXNlcjpwYXNz"],
+                ["Content-Type", "application/json"],
+            ],
+        }
+        res = sanitize_payload(list_payload)
+        self.assertEqual(res["users"][0]["username"], "alice")
+        self.assertEqual(res["users"][0]["auth_token"], "[REDACTED]")
+        self.assertEqual(res["users"][1]["credential_hash"], "[REDACTED]")
+        self.assertEqual(res["headers"][1][1], "application/json")
+
+    def test_audit_09_non_sensitive_preservation_and_immutability(self):
+        """9. Non-sensitive preservation and immutability: operational features preserved; input unmutated."""
+        original_inputs = {
+            "season": 3,
+            "mnth": 7,
+            "hr": 17,
+            "holiday": 0,
+            "weekday": 2,
+            "workingday": 1,
+            "weathersit": 1,
+            "temp": 0.72,
+            "atemp": 0.68,
+            "hum": 0.50,
+            "windspeed": 0.19,
+            "secret_key": "raw_sensitive_string",
+        }
+        original_copy = dict(original_inputs)
+
+        sanitized = sanitize_payload(original_inputs)
+
+        # Immutability check
+        self.assertEqual(original_inputs, original_copy, "sanitize_payload must not mutate the caller's input dictionary")
+        self.assertEqual(original_inputs["secret_key"], "raw_sensitive_string")
+
+        # Preservation check
+        for k in ["season", "mnth", "hr", "holiday", "weekday", "workingday", "weathersit", "temp", "atemp", "hum", "windspeed"]:
+            self.assertEqual(sanitized[k], original_inputs[k], f"Operational feature '{k}' was unexpectedly modified")
+        self.assertEqual(sanitized["secret_key"], "[REDACTED]")
+
+    def test_audit_10_concurrent_writes_thread_safety(self):
+        """10. Concurrent writes: 10 threads writing 25 records each (250 total) yield zero lost or corrupted lines."""
+        num_threads = 10
+        records_per_thread = 25
+        total_records = num_threads * records_per_thread
+
+        def worker(thread_idx):
+            for r in range(records_per_thread):
+                self.logger.log_execution(
+                    status="ok",
+                    requested_datetime=f"2026-11-02T{r % 24:02d}:00",
+                    predicted_cnt=thread_idx * 100 + r,
+                    model_level="L5",
+                    input_vector={"thread": thread_idx, "seq": r},
+                )
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        records = self._read_parsed_records()
+        self.assertEqual(len(records), total_records, f"Expected {total_records} records, but found {len(records)}")
+
+        # Verify all log IDs are unique
+        log_ids = {r["log_id"] for r in records}
+        self.assertEqual(len(log_ids), total_records, "Duplicate log_ids found during concurrent writes")
+
+    def test_audit_11_append_only_behaviour(self):
+        """11. Append-only behaviour: sequential writes strictly append without truncating earlier records."""
+        self.logger.log_execution(status="ok", predicted_cnt=100)
+        self.assertEqual(len(self._read_raw_lines()), 1)
+
+        self.logger.log_execution(status="ok", predicted_cnt=200)
+        self.assertEqual(len(self._read_raw_lines()), 2)
+
+        self.logger.log_execution(status="ok", predicted_cnt=300)
+        lines = self._read_raw_lines()
+        self.assertEqual(len(lines), 3)
+
+        records = [json.loads(l) for l in lines]
+        self.assertEqual([r["predicted_cnt"] for r in records], [100, 200, 300])
+
+    def test_audit_12_existing_log_preservation(self):
+        """12. Existing log preservation: initial file contents are retained when logger starts."""
+        initial_entries = [
+            {"log_id": str(uuid.uuid4()), "request_id": str(uuid.uuid4()), "status": "ok", "predicted_cnt": 50},
+            {"log_id": str(uuid.uuid4()), "request_id": str(uuid.uuid4()), "status": "ok", "predicted_cnt": 75},
+        ]
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            for entry in initial_entries:
+                f.write(json.dumps(entry) + "\n")
+
+        # New logger instance targeting the same file
+        new_logger = ExecutionLogger(log_path=self.log_path)
+        new_logger.log_execution(status="ok", predicted_cnt=120)
+
+        lines = self._read_raw_lines()
+        self.assertEqual(len(lines), 3, "Pre-existing log entries must not be overwritten or truncated")
+        self.assertEqual(json.loads(lines[0])["predicted_cnt"], 50)
+        self.assertEqual(json.loads(lines[1])["predicted_cnt"], 75)
+        self.assertEqual(json.loads(lines[2])["predicted_cnt"], 120)
+
+    def test_audit_13_successful_prediction_logging(self):
+        """13. Successful prediction logging: captures status='ok', count, level, weather source, and api_status."""
+        rec = self.logger.log_execution(
+            status="ok",
+            requested_datetime="2026-11-02T15:00",
+            predicted_cnt=450,
+            model_level="L5",
+            weather_source="Open-Meteo Forecast API (Live)",
+            api_status="200",
+            input_vector={"temp": 0.65, "hum": 0.45},
+        )
+        self.assertEqual(rec["status"], "ok")
+        self.assertEqual(rec["predicted_cnt"], 450)
+        self.assertEqual(rec["model_level"], "L5")
+        self.assertEqual(rec["weather_source"], "Open-Meteo Forecast API (Live)")
+        self.assertEqual(rec["api_status"], "200")
+        self.assertIsNone(rec["error_code"])
+
+    def test_audit_14_failed_prediction_logging(self):
+        """14. Failed prediction logging: validation error, weather failure, and system error audit structure."""
+        # Validation failure
+        val_rec = self.logger.log_execution(
+            status="validation_error",
+            requested_datetime="2026-11-02 hr=25",
+            error_code="ERR_VAL_01",
+        )
+        self.assertEqual(val_rec["status"], "validation_error")
+        self.assertEqual(val_rec["error_code"], "ERR_VAL_01")
+        self.assertIsNone(val_rec["predicted_cnt"])
+
+        # Weather API timeout failure
+        w_rec = self.logger.log_execution(
+            status="weather_api_error",
+            requested_datetime="2026-11-02T15:00",
+            error_code="WARN_API_01",
+            weather_source="Open-Meteo Forecast API",
+            api_status="timeout",
+        )
+        self.assertEqual(w_rec["status"], "weather_api_error")
+        self.assertEqual(w_rec["error_code"], "WARN_API_01")
+        self.assertEqual(w_rec["api_status"], "timeout")
+        self.assertIsNone(w_rec["predicted_cnt"])
+
+        # System error (model missing)
+        sys_rec = self.logger.log_execution(
+            status="prediction_error",
+            requested_datetime="2026-11-02T15:00",
+            error_code="ERR_SYS_01",
+        )
+        self.assertEqual(sys_rec["status"], "prediction_error")
+        self.assertEqual(sys_rec["error_code"], "ERR_SYS_01")
+        self.assertIsNone(sys_rec["predicted_cnt"])
+
+    def test_audit_15_logger_write_failure_failsafe(self):
+        """15. Logger write failure failsafe: unwritable log destination fails safely without crashing caller."""
+        # Target path pointing to an invalid destination (a directory path instead of a file)
+        invalid_logger = ExecutionLogger(log_path=self.temp_dir.name)  # directory path
+        try:
+            res = invalid_logger.log_execution(
+                status="ok",
+                requested_datetime="2026-11-02T10:00",
+                predicted_cnt=180,
+                model_level="L0",
+            )
+            # Must return the record dictionary safely without raising an unhandled exception
+            self.assertIsInstance(res, dict)
+            self.assertEqual(res["status"], "ok")
+            self.assertTrue(is_valid_uuid4(res["log_id"]))
+        except Exception as e:
+            self.fail(f"Logger raised unexpected exception on unwritable destination: {e}")
+
+    def test_audit_16_recent_log_retrieval(self):
+        """16. Recent log retrieval: get_recent_logs returns newest-first ordering and respects limit."""
+        for i in range(10):
+            self.logger.log_execution(
+                status="ok",
+                requested_datetime=f"2026-11-02T{i:02d}:00",
+                predicted_cnt=i * 10,
+            )
+
+        # Retrieve top 3
+        top3 = self.logger.get_recent_logs(limit=3)
+        self.assertEqual(len(top3), 3)
+        # Newest record is i=9, followed by 8, then 7
+        self.assertEqual(top3[0]["predicted_cnt"], 90)
+        self.assertEqual(top3[1]["predicted_cnt"], 80)
+        self.assertEqual(top3[2]["predicted_cnt"], 70)
+
+        # Retrieve with limit greater than total
+        all_logs = self.logger.get_recent_logs(limit=50)
+        self.assertEqual(len(all_logs), 10)
+        self.assertEqual(all_logs[0]["predicted_cnt"], 90)
+        self.assertEqual(all_logs[-1]["predicted_cnt"], 0)
+
+    def test_audit_17_empty_and_malformed_log_handling(self):
+        """17. Empty and malformed log handling: handles missing files, blank lines, corrupt JSON lines, and sanitizes on read."""
+        # Non-existent file
+        non_existent_logger = ExecutionLogger(log_path=os.path.join(self.temp_dir.name, "does_not_exist.jsonl"))
+        self.assertEqual(non_existent_logger.get_recent_logs(), [])
+
+        # Empty file
+        empty_log_path = os.path.join(self.temp_dir.name, "empty.jsonl")
+        open(empty_log_path, "w", encoding="utf-8").close()
+        empty_logger = ExecutionLogger(log_path=empty_log_path)
+        self.assertEqual(empty_logger.get_recent_logs(), [])
+
+        # Corrupt file with invalid lines and unredacted sensitive keys
+        corrupt_path = os.path.join(self.temp_dir.name, "corrupt.jsonl")
+        valid_rec1 = {"log_id": str(uuid.uuid4()), "request_id": str(uuid.uuid4()), "status": "ok", "predicted_cnt": 100}
+        valid_rec2 = {
+            "log_id": str(uuid.uuid4()),
+            "request_id": str(uuid.uuid4()),
+            "status": "ok",
+            "predicted_cnt": 200,
+            "input_vector": {"api_key": "raw_leaked_key", "temp": 0.5},
+        }
+
+        with open(corrupt_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(valid_rec1) + "\n")
+            f.write("\n")  # Blank line
+            f.write("MALFORMED JSON LINE {not valid json\n")  # Broken JSON line
+            f.write("   \n")  # Whitespace line
+            f.write(json.dumps(valid_rec2) + "\n")
+            f.write('{"truncated": true, "half": \n')  # Half-written line
+
+        corrupt_logger = ExecutionLogger(log_path=corrupt_path)
+        recovered = corrupt_logger.get_recent_logs(limit=10)
+
+        # Corrupted lines must be safely skipped; both valid records recovered
+        self.assertEqual(len(recovered), 2)
+        # Newest first
+        self.assertEqual(recovered[0]["predicted_cnt"], 200)
+        self.assertEqual(recovered[1]["predicted_cnt"], 100)
+        # Defense-in-depth sanitization: raw key masked on read
+        self.assertEqual(recovered[0]["input_vector"]["api_key"], "[REDACTED]")
+        self.assertEqual(recovered[0]["input_vector"]["temp"], 0.5)
 
 
 if __name__ == "__main__":
