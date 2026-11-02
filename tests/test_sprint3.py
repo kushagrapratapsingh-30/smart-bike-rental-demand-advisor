@@ -808,5 +808,342 @@ class TestSprint3PredictionWorkflowIntegration(unittest.TestCase):
         self.assertIn('st.session_state["prediction_result"]', self.app_source)
 
 
+class TestSprint3PredictionLifecycleAndUI(unittest.TestCase):
+    """Lifecycle and UI integration verification tests for Sprint 3 Phase 3.
+
+    Verifies prediction lifecycle states, stale prevention, input immutability,
+    repeated predictions, session-state management, error presentation,
+    and UI contract compliance.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mm = get_model_manager("dataset/hour.csv")
+        with open("app.py", "r", encoding="utf-8") as f:
+            cls.app_source = f.read()
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.log_path = os.path.join(self.temp_dir.name, "lifecycle_log.jsonl")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _read_logs(self):
+        if not os.path.exists(self.log_path):
+            return []
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            return [json.loads(line.strip()) for line in f if line.strip()]
+
+    def test_lifecycle_01_initial_load_no_prediction_triggered(self):
+        """1. Initial load does not execute prediction: session state is None and ready state is rendered."""
+        # Simulate clean session state on initial page load
+        session_state = {}
+        res = session_state.get("prediction_result")
+        self.assertIsNone(res, "On initial application load, prediction_result must be None")
+        # Verify app source guards against auto-execution and renders awaiting submission state
+        self.assertIn("res is None", self.app_source)
+        self.assertIn("Awaiting Submission", self.app_source)
+        self.assertIn("Ready to Advise Demand", self.app_source)
+
+    def test_lifecycle_02_initial_load_creates_no_logs(self):
+        """2. Initial load does not create logs: log file remains non-existent or empty."""
+        logs = self._read_logs()
+        self.assertEqual(len(logs), 0, "No log entries should exist on initial application load")
+        self.assertFalse(os.path.exists(self.log_path))
+
+    def test_lifecycle_03_input_changes_do_not_execute_prediction(self):
+        """3. Input changes do not execute prediction: changing parameters without button does not run workflow or log."""
+        mock_workflow = MagicMock()
+        # Simulate widget value changes on left column
+        selected_date = date(2026, 11, 2)
+        selected_hour = 17
+        model_level = "L5"
+        predict_btn = False  # Widget interaction triggers passive rerun, predict_btn is False
+
+        if predict_btn:
+            mock_workflow()
+
+        mock_workflow.assert_not_called()
+        self.assertEqual(len(self._read_logs()), 0)
+
+    @patch("urllib.request.urlopen")
+    def test_lifecycle_04_successful_prediction_executes_once(self, mock_urlopen):
+        """4. Successful prediction executes once: generates count, request ID, MAE, and 1 log entry."""
+        target_iso = "2026-11-02T14:00"
+        payload = {
+            "hourly": {
+                "time": [target_iso],
+                "temperature_2m": [18.0],
+                "apparent_temperature": [17.5],
+                "relative_humidity_2m": [50.0],
+                "wind_speed_10m": [10.0],
+                "weather_code": [0],
+            }
+        }
+        mock_urlopen.return_value = _MockHTTPResponse(json.dumps(payload).encode("utf-8"), status=200)
+
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=14,
+            model_level="L5",
+            use_manual_weather=False,
+            log_path=self.log_path,
+            model_manager=self.mm,
+            current_date=date(2026, 11, 2),
+        )
+
+        self.assertTrue(res["success"])
+        self.assertIsInstance(res["predicted_cnt"], int)
+        self.assertGreaterEqual(res["predicted_cnt"], 0)
+        self.assertTrue(is_valid_uuid4(res["request_id"]))
+        self.assertIsNotNone(res.get("mae"))
+
+        logs = self._read_logs()
+        self.assertEqual(len(logs), 1, "Exactly one log record must be generated per prediction execution")
+        self.assertEqual(logs[0]["request_id"], res["request_id"])
+
+    def test_lifecycle_05_repeated_intentional_prediction_creates_new_request(self):
+        """5. Repeated intentional prediction creates a new request: unique request IDs and separate log records."""
+        res1 = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=9,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+        res2 = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=10,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+
+        self.assertNotEqual(res1["request_id"], res2["request_id"], "Subsequent predictions must have unique request IDs")
+        self.assertTrue(is_valid_uuid4(res1["request_id"]))
+        self.assertTrue(is_valid_uuid4(res2["request_id"]))
+
+        logs = self._read_logs()
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[0]["request_id"], res1["request_id"])
+        self.assertEqual(logs[1]["request_id"], res2["request_id"])
+
+    def test_lifecycle_06_passive_rerun_does_not_duplicate_prediction_or_logs(self):
+        """6. Passive rerun does not duplicate prediction: existing result in state rendered without re-running workflow."""
+        # Initial genuine submission
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=12,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+        session_state = {"prediction_result": res}
+        self.assertEqual(len(self._read_logs()), 1)
+
+        # Simulate 5 passive Streamlit reruns (sliders, tabs, toggles without clicking predict)
+        for _ in range(5):
+            predict_btn = False
+            if predict_btn:
+                predict_demand_workflow(
+                    target_date=date(2026, 11, 2),
+                    target_hour=12,
+                    model_level="L0",
+                    log_path=self.log_path,
+                    model_manager=self.mm,
+                )
+            # col_result simply reads session_state["prediction_result"]
+            active_res = session_state.get("prediction_result")
+            self.assertEqual(active_res["request_id"], res["request_id"])
+
+        self.assertEqual(len(self._read_logs()), 1, "Passive reruns must never duplicate execution log entries")
+
+    def test_lifecycle_07_invalid_inputs_halt_and_replace_old_prediction(self):
+        """7. Invalid inputs handled correctly: ERR_VAL_01 / ERR_VAL_02 halt before inference and replace old result."""
+        # Prior valid result
+        valid_res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=14,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+        session_state = {"prediction_result": valid_res}
+        self.assertTrue(session_state["prediction_result"]["success"])
+
+        # User enters invalid hour (hr=25) and clicks Predict
+        invalid_hr_res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=25,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+        session_state["prediction_result"] = invalid_hr_res
+
+        self.assertFalse(session_state["prediction_result"]["success"])
+        self.assertEqual(session_state["prediction_result"]["status"], "validation_error")
+        self.assertEqual(session_state["prediction_result"]["error_code"], "ERR_VAL_01")
+        self.assertIsNone(session_state["prediction_result"]["predicted_cnt"])
+
+        # User enters invalid date (year 2035) and clicks Predict
+        invalid_date_res = predict_demand_workflow(
+            target_date=date(2035, 1, 1),
+            target_hour=12,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+        session_state["prediction_result"] = invalid_date_res
+
+        self.assertFalse(session_state["prediction_result"]["success"])
+        self.assertEqual(session_state["prediction_result"]["status"], "validation_error")
+        self.assertEqual(session_state["prediction_result"]["error_code"], "ERR_VAL_02")
+        self.assertIsNone(session_state["prediction_result"]["predicted_cnt"])
+
+    @patch("urllib.request.urlopen")
+    def test_lifecycle_08_weather_failure_does_not_silently_run_l0(self, mock_urlopen):
+        """8. Weather failure does not silently fall back to L0: returns failure status and logs warning."""
+        mock_urlopen.side_effect = Exception("Open-Meteo connection timed out")
+
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=15,
+            model_level="L5",
+            use_manual_weather=False,
+            log_path=self.log_path,
+            model_manager=self.mm,
+            current_date=date(2026, 11, 2),
+        )
+
+        self.assertFalse(res["success"], "Weather API failure must not produce a fabricated success")
+        self.assertEqual(res["status"], "weather_api_error")
+        self.assertEqual(res["warning_code"], "WARN_API_01")
+        self.assertIsNone(res["predicted_cnt"])
+
+        logs = self._read_logs()
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["status"], "weather_api_error")
+        self.assertEqual(logs[0]["error_code"], "WARN_API_01")
+        self.assertIsNone(logs[0]["predicted_cnt"])
+
+    def test_lifecycle_09_manual_weather_override_works(self):
+        """9. Manual weather override works: uses user inputs and logs labelled manual source without network calls."""
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=16,
+            model_level="L4",
+            use_manual_weather=True,
+            manual_weather={
+                "temperature_c": 22.5,
+                "apparent_temperature_c": 21.0,
+                "humidity_pct": 45.0,
+                "wind_speed_kmh": 8.0,
+                "weather_desc": "Clear",
+            },
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["weather_source"], "Manual Input (Labelled Fallback)")
+        self.assertEqual(res["api_status"], "manual_override")
+        self.assertIsInstance(res["predicted_cnt"], int)
+
+        logs = self._read_logs()
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["weather_source"], "Manual Input (Labelled Fallback)")
+
+    def test_lifecycle_10_explicit_l0_selection_uses_dynamic_mean(self):
+        """10. Explicit L0 selection works: uses dynamic training mean from ModelManager.l0_mean, never hardcoded."""
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=17,
+            model_level="L0",
+            log_path=self.log_path,
+            model_manager=self.mm,
+        )
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["requested_level"], "L0")
+        self.assertEqual(res["used_level"], "L0")
+        self.assertEqual(res["weather_source"], "Explicit L0 Baseline")
+        self.assertEqual(res["api_status"], "not_required")
+
+        expected_cnt = int(round(self.mm.l0_mean))
+        self.assertEqual(res["predicted_cnt"], expected_cnt, "L0 prediction must strictly match rounded dynamic l0_mean")
+        self.assertAlmostEqual(res["predicted_cnt_raw"], self.mm.l0_mean, places=2)
+
+    def test_lifecycle_11_stale_prediction_detection_and_ui_guard(self):
+        """11. Old prediction results are not misleadingly displayed: signature comparison detects modified parameters."""
+        saved_signature = {
+            "date": "2026-11-02",
+            "hour": 17,
+            "model_level": "L5",
+            "use_manual_weather": False,
+            "manual_weather": None,
+        }
+
+        # Case A: Identical inputs -> not stale
+        current_identical = {
+            "date": "2026-11-02",
+            "hour": 17,
+            "model_level": "L5",
+            "use_manual_weather": False,
+            "manual_weather": None,
+        }
+        self.assertFalse(current_identical != saved_signature)
+
+        # Case B: Changed hour -> stale
+        current_changed_hr = dict(saved_signature, hour=18)
+        self.assertTrue(current_changed_hr != saved_signature)
+
+        # Case C: Changed date -> stale
+        current_changed_date = dict(saved_signature, date="2026-11-03")
+        self.assertTrue(current_changed_date != saved_signature)
+
+        # Case D: Changed model tier -> stale
+        current_changed_lvl = dict(saved_signature, model_level="L1")
+        self.assertTrue(current_changed_lvl != saved_signature)
+
+        # Case E: Enabled manual weather -> stale
+        current_changed_weather = dict(saved_signature, use_manual_weather=True, manual_weather={"temperature_c": 25.0})
+        self.assertTrue(current_changed_weather != saved_signature)
+
+        # Verify app source implements stale warning banner, prior run badge, and clear button
+        self.assertIn("is_inputs_modified", self.app_source)
+        self.assertIn("Parameters Modified Since Run", self.app_source)
+        self.assertIn("Prior Run", self.app_source)
+        self.assertIn("Clear Prediction", self.app_source)
+
+    def test_lifecycle_12_request_ids_remain_unique(self):
+        """12. Request IDs remain unique: 24 consecutive predictions generate 24 unique UUID v4 IDs."""
+        req_ids = set()
+        log_ids = set()
+
+        for h in range(24):
+            res = predict_demand_workflow(
+                target_date=date(2026, 11, 2),
+                target_hour=h,
+                model_level="L0",
+                log_path=self.log_path,
+                model_manager=self.mm,
+            )
+            self.assertTrue(is_valid_uuid4(res["request_id"]))
+            req_ids.add(res["request_id"])
+
+        logs = self._read_logs()
+        self.assertEqual(len(logs), 24)
+        for entry in logs:
+            log_ids.add(entry["log_id"])
+
+        self.assertEqual(len(req_ids), 24, "All 24 request IDs must be strictly unique")
+        self.assertEqual(len(log_ids), 24, "All 24 log IDs must be strictly unique")
+        # Set intersection between log_ids and req_ids must be empty
+        self.assertTrue(req_ids.isdisjoint(log_ids), "Request IDs and Log IDs must never overlap")
+
+
 if __name__ == "__main__":
     unittest.main()

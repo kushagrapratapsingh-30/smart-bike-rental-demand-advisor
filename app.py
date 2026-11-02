@@ -192,6 +192,11 @@ st.markdown(
         color: #1E40AF;
         border: 1px solid #BFDBFE;
     }
+    .pill-amber {
+        background: #FEF3C7;
+        color: #92400E;
+        border: 1px solid #FDE68A;
+    }
 
     /* KPI Metric Cards */
     .kpi-card {
@@ -690,9 +695,22 @@ elif page == "Demand Predictor":
             help="Select the evaluation tier. L5 (Random Forest) is recommended.",
         )
 
+        # Snapshot of currently configured inputs to detect modifications / stale state
+        current_input_signature = {
+            "date": str(selected_date),
+            "hour": int(selected_hour_idx),
+            "model_level": str(model_level),
+            "use_manual_weather": bool(use_manual_weather),
+            "manual_weather": {
+                "temperature_c": float(m_temp),
+                "humidity_pct": float(m_hum),
+                "wind_speed_kmh": float(m_wind),
+                "weather_desc": str(m_cond),
+            } if use_manual_weather else None,
+        }
+
         st.write("")
         predict_btn = st.button("Predict Demand", use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
         if predict_btn:
             manual_weather_data = {
@@ -712,9 +730,36 @@ elif page == "Demand Predictor":
                 model_manager=mm,
             )
             st.session_state["prediction_result"] = workflow_result
+            st.session_state["prediction_inputs"] = current_input_signature
+
+        if st.session_state.get("prediction_result") is not None:
+            if st.button("Clear Prediction", use_container_width=True, help="Clear displayed prediction and return to ready state."):
+                st.session_state["prediction_result"] = None
+                st.session_state["prediction_inputs"] = None
+                st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with col_result:
         res = st.session_state.get("prediction_result")
+        saved_inputs = st.session_state.get("prediction_inputs")
+
+        # Determine if inputs have changed since the displayed prediction was generated
+        is_inputs_modified = bool(
+            res is not None
+            and saved_inputs is not None
+            and current_input_signature != saved_inputs
+        )
+
+        if res is not None and is_inputs_modified:
+            last_date_str = saved_inputs.get("date", "unknown")
+            last_hr_val = saved_inputs.get("hour", 0)
+            last_lvl = saved_inputs.get("model_level", "L5")
+            st.warning(
+                f"⚠️ **Parameters Modified Since Run:** The displayed estimate below was generated for "
+                f"**{last_date_str} at {last_hr_val:02d}:00 ({last_lvl})**. "
+                f"Input parameters on the left have been changed. Click **Predict Demand** to recalculate for your updated settings."
+            )
 
         if res is None:
             st.markdown(
@@ -826,15 +871,25 @@ elif page == "Demand Predictor":
             method_name = f"{used_level} — {method_desc}"
             mae_str = f"± {pred_mae:.1f} bikes / hour" if pred_mae is not None else "N/A*"
 
+            header_status_badge = (
+                f'<span class="status-pill pill-amber" style="margin-left:auto; font-size:0.72rem;">⚠️ Prior Run ({saved_inputs.get("date")} {saved_inputs.get("hour", 0):02d}:00)</span>'
+                if (is_inputs_modified and saved_inputs)
+                else '<span class="status-pill pill-green" style="margin-left:auto; font-size:0.72rem;">Active Result</span>'
+            )
+
             st.markdown(
                 f"""
                 <div class="hero-pred-card">
-                    <div class="hero-pred-header">Estimated Hourly Demand</div>
+                    <div class="hero-pred-header">
+                        <span>Estimated Hourly Demand</span>
+                        {header_status_badge}
+                    </div>
                     <div class="hero-pred-val">{pred_count} <span class="hero-pred-unit">bikes / hour</span></div>
                     <div class="hero-pred-footer">
                         <div>
                             <div style="font-weight:700;">Prediction Method:</div>
                             <div style="color:#CCFBF1;">{method_name}</div>
+                            <div style="font-size:0.74rem; color:#A7F3D0; margin-top:2px;">Target: {res.get('requested_datetime', '')} ({res.get('requested_level', used_level)})</div>
                         </div>
                         <div style="text-align:right;">
                             <div style="font-weight:700;">Historical Test MAE:</div>
