@@ -11,8 +11,10 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 import uuid
 
+from src.data_cleaning import load_dataset
 from src.models import ModelManager, get_model_manager
 from src.prediction_service import predict_demand_workflow, validate_request_datetime
 from src.logger import (
@@ -1585,6 +1587,452 @@ class TestSprint3LoggingAndAuditVerification(unittest.TestCase):
         # Defense-in-depth sanitization: raw key masked on read
         self.assertEqual(recovered[0]["input_vector"]["api_key"], "[REDACTED]")
         self.assertEqual(recovered[0]["input_vector"]["temp"], 0.5)
+
+
+class TestSprint3Phase5ComprehensiveRegressionAndEdgeCases(unittest.TestCase):
+    """Sprint 3 Phase 5: Comprehensive Project-Wide Verification & Regression Suite.
+
+    Validates:
+    1. Boundary hours (0 and 23) across multiple tiers.
+    2. Date formats: date, datetime, ISO timestamp strings, leap years, min/max operational years.
+    3. Date validation rejection & error recording (ERR_VAL_02).
+    4. Hour validation rejection & error recording (ERR_VAL_01).
+    5. Extreme manual weather inputs (sub-zero, extreme heat, 100% hum, gale wind, heavy rain).
+    6. Non-numeric manual weather inputs rejection.
+    7. Missing bundle fallback to dynamic training mean (~174.64 -> 175).
+    8. Corrupted model bundle graceful degradation (is_artifact_loaded=False, WARN_SYS_01).
+    9. Weather API HTTP error handling (404, 500) without crashing or fabricating predictions.
+    10. Weather API timeout handling without silent fallback.
+    11. Weather API unsupported forecast horizon (>7 days).
+    12. Weather API unknown WMO code handling (WARN_MAP_01).
+    13. Past date live forecast rejection policy.
+    14. High concurrency stress test across 20 threads with unique UUIDs and uncorrupted JSONL.
+    15. Execution logger self-healing and recovery from corrupted JSONL lines.
+    16. End-to-end dataset schema and 80/20 chronological split integrity.
+    17. End-to-end model performance progression (L0-L5) and test MAE hierarchy.
+    18. Strict SRS Table 9.4 12-field schema persistence verification.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.log_path = os.path.join(self.temp_dir.name, "phase5_test_log.jsonl")
+        self.logger = ExecutionLogger(log_path=self.log_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_regression_01_boundary_hours_0_and_23(self):
+        """1. Boundary hours 0 (midnight) and 23 (11 PM) succeed across L0, L4, and L5 with valid outputs."""
+        for hr in [0, 23]:
+            for lvl in ["L0", "L4", "L5"]:
+                res = predict_demand_workflow(
+                    target_date=date(2026, 11, 2),
+                    target_hour=hr,
+                    model_level=lvl,
+                    use_manual_weather=True,
+                    manual_weather={
+                        "temperature_c": 16.0,
+                        "apparent_temperature_c": 14.5,
+                        "humidity_pct": 55.0,
+                        "wind_speed_kmh": 10.0,
+                        "weather_desc": "Clear",
+                    },
+                    log_path=self.log_path,
+                )
+                self.assertTrue(res["success"], f"Failed for hr={hr}, lvl={lvl}")
+                self.assertEqual(res["status"], "ok")
+                self.assertIsInstance(res["predicted_cnt"], int)
+                self.assertGreaterEqual(res["predicted_cnt"], 0)
+                self.assertEqual(res["feature_dict"]["hr"], hr)
+                self.assertTrue(is_valid_uuid4(res["request_id"]))
+
+    def test_regression_02_datetime_representation_formats(self):
+        """2. All valid date representations (date, datetime, ISO timestamp strings, leap day, min/max years) succeed."""
+        date_formats = [
+            (date(2026, 11, 2), 14),
+            (datetime(2026, 11, 2, 14, 0), None),
+            ("2026-11-02T14:00", None),
+            ("2026-11-02", 14),
+            (date(2024, 2, 29), 12),      # Leap day
+            (date(2011, 1, 1), 0),        # Min operational boundary
+            (date(2030, 12, 31), 23),     # Max operational boundary
+        ]
+        for dt_val, hr_val in date_formats:
+            res = predict_demand_workflow(
+                target_date=dt_val,
+                target_hour=hr_val,
+                model_level="L0",
+                log_path=self.log_path,
+            )
+            self.assertTrue(res["success"], f"Failed for dt={dt_val}, hr={hr_val}")
+            self.assertEqual(res["status"], "ok")
+            self.assertIsInstance(res["predicted_cnt"], int)
+            self.assertGreaterEqual(res["predicted_cnt"], 0)
+
+    def test_regression_03_datetime_validation_rejections(self):
+        """3. Invalid dates (None, bad strings, <2011, >2030, bad types) halt execution with ERR_VAL_02."""
+        invalid_dates = [
+            (None, 12),
+            ("invalid-date-string", 12),
+            ("2026-13-45", 12),
+            (date(2010, 12, 31), 12),     # Pre-operational
+            (date(2031, 1, 1), 12),       # Beyond operational horizon
+            (123456, 12),                 # Unsupported type
+        ]
+        for dt_val, hr_val in invalid_dates:
+            res = predict_demand_workflow(
+                target_date=dt_val,
+                target_hour=hr_val,
+                model_level="L0",
+                log_path=self.log_path,
+            )
+            self.assertFalse(res["success"])
+            self.assertEqual(res["error_code"], "ERR_VAL_02")
+            self.assertIsNone(res["predicted_cnt"])
+            self.assertEqual(res["status"], "validation_error")
+
+    def test_regression_04_hour_validation_rejections(self):
+        """4. Invalid hours (-1, 24, 25, strings, floats, None) halt execution with ERR_VAL_01."""
+        invalid_hours = [-1, 24, 25, 100, "invalid_str", 12.5, None]
+        for hr_val in invalid_hours:
+            res = predict_demand_workflow(
+                target_date=date(2026, 11, 2),
+                target_hour=hr_val,
+                model_level="L0",
+                log_path=self.log_path,
+            )
+            self.assertFalse(res["success"])
+            self.assertEqual(res["error_code"], "ERR_VAL_01")
+            self.assertIsNone(res["predicted_cnt"])
+            self.assertEqual(res["status"], "validation_error")
+
+    def test_regression_05_extreme_weather_inputs_manual_override(self):
+        """5. Extreme weather inputs (sub-zero, extreme heat, 100% hum, gale wind, heavy rain) produce non-negative predictions."""
+        extreme_scenarios = [
+            {"temperature_c": -15.0, "apparent_temperature_c": -20.0, "humidity_pct": 0.0, "wind_speed_kmh": 70.0, "weather_desc": "Clear"},
+            {"temperature_c": 45.0, "apparent_temperature_c": 48.0, "humidity_pct": 100.0, "wind_speed_kmh": 0.0, "weather_desc": "Heavy Rain"},
+            {"temperature_c": 0.0, "apparent_temperature_c": -5.0, "humidity_pct": 50.0, "wind_speed_kmh": 35.0, "weather_desc": "Mist/Cloudy"},
+        ]
+        for scen in extreme_scenarios:
+            for lvl in ["L4", "L5"]:
+                res = predict_demand_workflow(
+                    target_date=date(2026, 11, 2),
+                    target_hour=14,
+                    model_level=lvl,
+                    use_manual_weather=True,
+                    manual_weather=scen,
+                    log_path=self.log_path,
+                )
+                self.assertTrue(res["success"], f"Failed for lvl={lvl}, scen={scen}")
+                self.assertIsInstance(res["predicted_cnt"], int)
+                self.assertGreaterEqual(res["predicted_cnt"], 0)
+                self.assertEqual(res["weather_source"], "Manual Input (Labelled Fallback)")
+
+    def test_regression_06_non_numeric_manual_weather_rejection(self):
+        """6. Non-numeric manual weather inputs halt with ERR_VAL_01 and log a validation_error."""
+        bad_weather = {"temperature_c": "freezing", "humidity_pct": "humid", "wind_speed_kmh": "fast", "weather_desc": "Clear"}
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=14,
+            model_level="L4",
+            use_manual_weather=True,
+            manual_weather=bad_weather,
+            log_path=self.log_path,
+        )
+        self.assertFalse(res["success"])
+        self.assertEqual(res["error_code"], "ERR_VAL_01")
+        self.assertIn("must be numeric", res["message"])
+        self.assertEqual(res["status"], "validation_error")
+
+    def test_regression_07_missing_model_bundle_dynamic_mean_fallback(self):
+        """7. Missing model bundle falls back to dynamically calculated training mean with WARN_SYS_01."""
+        non_existent_bundle = os.path.join(self.temp_dir.name, "missing_model.joblib")
+        # Instantiate ModelManager with a bundle path that doesn't exist; simulate missing bundle without retraining
+        mm = ModelManager.__new__(ModelManager)
+        mm.dataset_path = "dataset/hour.csv"
+        mm.bundle_path = non_existent_bundle
+        mm.df = load_dataset("dataset/hour.csv")
+        mm.n_total = len(mm.df)
+        mm.n_train = int(len(mm.df) * 0.80)
+        mm.train_df = mm.df.iloc[: mm.n_train].copy()
+        mm.test_df = mm.df.iloc[mm.n_train :].copy()
+        mm.y_train = mm.train_df["cnt"].values
+        mm.y_test = mm.test_df["cnt"].values
+        mm.X_train = mm.train_df[["season", "mnth", "hr", "holiday", "weekday", "workingday", "weathersit", "temp", "atemp", "hum", "windspeed"]]
+        mm.X_test = mm.test_df[["season", "mnth", "hr", "holiday", "weekday", "workingday", "weathersit", "temp", "atemp", "hum", "windspeed"]]
+        mm.is_artifact_loaded = False
+        mm.lr_model = None
+        mm.rf_model = None
+        mm.l0_mean = float(mm.y_train.mean())
+        mm.l1_map = {}
+        mm.l2_map = {}
+        mm.l3_map = {}
+        mm.mae_scores = {"L0": 174.98, "L1": 113.73, "L2": 101.55, "L3": 95.48, "L4": 134.70, "L5": None}
+        mm.improvements = {"L0": -53.86, "L1": 0.0, "L2": 10.71, "L3": 16.05, "L4": -18.44, "L5": None}
+
+        pred_res = mm.predict("L5", {
+            "season": 1, "mnth": 1, "hr": 12, "holiday": 0, "weekday": 1,
+            "workingday": 1, "weathersit": 1, "temp": 0.3, "atemp": 0.3, "hum": 0.5, "windspeed": 0.1,
+        })
+        self.assertEqual(pred_res["used_level"], "L0")
+        self.assertEqual(pred_res["warning_code"], "WARN_SYS_01")
+        self.assertEqual(pred_res["status"], "model_fallback_l0")
+        self.assertAlmostEqual(pred_res["predicted_cnt"], 175, delta=1)
+
+    def test_regression_08_corrupted_model_bundle_graceful_handling(self):
+        """8. Corrupted model bundle file degrades gracefully to L0 dynamic mean baseline with WARN_SYS_01."""
+        corrupt_path = os.path.join(self.temp_dir.name, "corrupt_bundle.joblib")
+        with open(corrupt_path, "wb") as f:
+            f.write(b"NOT_A_VALID_JOBLIB_FILE_CORRUPT_BYTES_DATA")
+
+        mm = ModelManager(bundle_path=corrupt_path)
+        self.assertFalse(mm.is_artifact_loaded)
+        self.assertIsNone(mm.lr_model)
+        self.assertIsNone(mm.rf_model)
+        self.assertAlmostEqual(mm.l0_mean, 174.64, delta=0.5)
+
+        pred_res = mm.predict("L4", {
+            "season": 2, "mnth": 4, "hr": 17, "holiday": 0, "weekday": 3,
+            "workingday": 1, "weathersit": 1, "temp": 0.5, "atemp": 0.5, "hum": 0.4, "windspeed": 0.2,
+        })
+        self.assertEqual(pred_res["used_level"], "L0")
+        self.assertEqual(pred_res["warning_code"], "WARN_SYS_01")
+        self.assertEqual(pred_res["status"], "model_fallback_l0")
+
+    def test_regression_09_weather_api_http_errors_404_and_500(self):
+        """9. HTTP 404/500 errors from Open-Meteo record weather_api_error and WARN_API_01 without fabricating predictions."""
+        from urllib.error import HTTPError
+        for status_code in [404, 500]:
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.side_effect = HTTPError("http://example.com", status_code, "HTTP Error", {}, None)
+                res = predict_demand_workflow(
+                    target_date=date(2026, 11, 2),
+                    target_hour=14,
+                    model_level="L5",
+                    use_manual_weather=False,
+                    current_date=date(2026, 11, 1),
+                    log_path=self.log_path,
+                )
+                self.assertFalse(res["success"])
+                self.assertEqual(res["status"], "weather_api_error")
+                self.assertEqual(res["warning_code"], "WARN_API_01")
+                self.assertIsNone(res["predicted_cnt"])
+
+    def test_regression_10_weather_api_timeout_no_silent_fallback(self):
+        """10. Connection timeout records weather_api_error and WARN_API_01; does NOT silently run L0."""
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.side_effect = TimeoutError("Connection timed out after 2.0s")
+            res = predict_demand_workflow(
+                target_date=date(2026, 11, 2),
+                target_hour=14,
+                model_level="L5",
+                use_manual_weather=False,
+                current_date=date(2026, 11, 1),
+                log_path=self.log_path,
+            )
+            self.assertFalse(res["success"])
+            self.assertEqual(res["status"], "weather_api_error")
+            self.assertEqual(res["warning_code"], "WARN_API_01")
+            self.assertIsNone(res["predicted_cnt"])
+
+    def test_regression_11_weather_api_unsupported_forecast_horizon(self):
+        """11. Timestamp outside the 7-day forecast horizon records unsupported_time and WARN_API_02."""
+        from tests.test_sprint3 import _MockHTTPResponse
+        mock_payload = {
+            "hourly": {
+                "time": ["2026-11-01T12:00", "2026-11-01T13:00"],
+                "temperature_2m": [15.0, 15.0],
+                "apparent_temperature": [14.0, 14.0],
+                "relative_humidity_2m": [60.0, 60.0],
+                "wind_speed_10m": [8.0, 8.0],
+                "weather_code": [0, 0],
+            }
+        }
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value = _MockHTTPResponse(json.dumps(mock_payload).encode("utf-8"), status=200)
+            res = predict_demand_workflow(
+                target_date=date(2026, 11, 20),   # 19 days in the future
+                target_hour=14,
+                model_level="L5",
+                use_manual_weather=False,
+                current_date=date(2026, 11, 1),
+                log_path=self.log_path,
+            )
+            self.assertFalse(res["success"])
+            self.assertEqual(res["status"], "unsupported_time")
+            self.assertEqual(res["warning_code"], "WARN_API_02")
+            self.assertIsNone(res["predicted_cnt"])
+
+    def test_regression_12_weather_api_unknown_wmo_code(self):
+        """12. Unknown WMO code (999) records weather_validation_error and WARN_MAP_01."""
+        from tests.test_sprint3 import _MockHTTPResponse
+        mock_payload = {
+            "hourly": {
+                "time": ["2026-11-02T14:00"],
+                "temperature_2m": [18.0],
+                "apparent_temperature": [17.0],
+                "relative_humidity_2m": [60.0],
+                "wind_speed_10m": [15.0],
+                "weather_code": [999],
+            }
+        }
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value = _MockHTTPResponse(json.dumps(mock_payload).encode("utf-8"), status=200)
+            res = predict_demand_workflow(
+                target_date=date(2026, 11, 2),
+                target_hour=14,
+                model_level="L5",
+                use_manual_weather=False,
+                current_date=date(2026, 11, 1),
+                log_path=self.log_path,
+            )
+            self.assertFalse(res["success"])
+            self.assertEqual(res["status"], "weather_validation_error")
+            self.assertEqual(res["warning_code"], "WARN_MAP_01")
+            self.assertIsNone(res["predicted_cnt"])
+
+    def test_regression_13_past_date_forecast_rejection_policy(self):
+        """13. Target date in the past without manual weather records historical_weather_unavailable and halts."""
+        res = predict_demand_workflow(
+            target_date=date(2026, 10, 25),
+            target_hour=14,
+            model_level="L5",
+            use_manual_weather=False,
+            current_date=date(2026, 11, 1),
+            log_path=self.log_path,
+        )
+        self.assertFalse(res["success"])
+        self.assertEqual(res["status"], "historical_weather_unavailable")
+        self.assertIsNone(res["predicted_cnt"])
+
+    def test_regression_14_high_concurrency_stress_20_threads(self):
+        """14. High concurrency stress test across 20 threads generates unique UUIDs and uncorrupted JSONL log entries."""
+        def call_worker(idx):
+            return predict_demand_workflow(
+                target_date=date(2026, 11, 2),
+                target_hour=idx % 24,
+                model_level="L0",
+                log_path=self.log_path,
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = list(ex.map(call_worker, range(20)))
+
+        self.assertEqual(len(results), 20)
+        for r in results:
+            self.assertTrue(r["success"])
+            self.assertEqual(r["status"], "ok")
+
+        # Verify all request IDs are unique RFC 4122 UUID v4s
+        req_ids = [r["request_id"] for r in results]
+        self.assertEqual(len(set(req_ids)), 20)
+        for rid in req_ids:
+            self.assertTrue(is_valid_uuid4(rid))
+
+        # Verify all 20 lines written to disk are valid intact JSON records
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+
+        self.assertEqual(len(lines), 20)
+        parsed_records = [json.loads(line) for line in lines]
+        log_ids = [rec["log_id"] for rec in parsed_records]
+        self.assertEqual(len(set(log_ids)), 20)
+        for lid in log_ids:
+            self.assertTrue(is_valid_uuid4(lid))
+
+    def test_regression_15_logger_corrupt_file_recovery_and_append(self):
+        """15. Execution logger safely ignores corrupted/half-written lines and appends cleanly."""
+        corrupt_lines = [
+            "MALFORMED NON-JSON GARBAGE LINE",
+            "",
+            '{"partial_record": true, "half": ',
+            json.dumps({"log_id": str(uuid.uuid4()), "request_id": str(uuid.uuid4()), "status": "ok", "predicted_cnt": 150, "token": "secret_abc"}),
+            "   \t\n",
+        ]
+        with open(self.log_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(corrupt_lines) + "\n")
+
+        # Log new clean entry
+        self.logger.log_execution(
+            status="ok",
+            requested_datetime="2026-11-02T15:00",
+            predicted_cnt=220,
+            model_level="L5",
+        )
+
+        recovered = self.logger.get_recent_logs(limit=10)
+        self.assertEqual(len(recovered), 2)
+        self.assertEqual(recovered[0]["predicted_cnt"], 220)
+        self.assertEqual(recovered[1]["predicted_cnt"], 150)
+        # Defense-in-depth sanitization: raw key masked on read
+        self.assertEqual(recovered[1]["token"], "[REDACTED]")
+
+    def test_regression_16_dataset_schema_and_chronological_split(self):
+        """16. Dataset integrity: 17,379 rows, 17 columns, zero nulls, non-negative cnt, and 80/20 chronological split."""
+        df = load_dataset("dataset/hour.csv")
+        self.assertEqual(len(df), 17379)
+        self.assertEqual(df.shape[1], 17)
+        self.assertEqual(int(df.isnull().sum().sum()), 0)
+        self.assertTrue((df["cnt"] >= 0).all())
+        self.assertTrue(((df["casual"] + df["registered"]) == df["cnt"]).all())
+
+        n_train = int(len(df) * 0.80)
+        n_test = len(df) - n_train
+        self.assertEqual(n_train, 13903)
+        self.assertEqual(n_test, 3476)
+
+    def test_regression_17_model_evaluation_metrics_and_hierarchy(self):
+        """17. Model evaluation hierarchy: test set size 3,476, L0 MAE 174.98, L1 113.73, and L5 MAE improves over L0."""
+        mm = get_model_manager()
+        self.assertEqual(len(mm.test_df), 3476)
+        self.assertEqual(mm.mae_scores["L0"], 174.98)
+        self.assertEqual(mm.mae_scores["L1"], 113.73)
+        self.assertEqual(mm.mae_scores["L2"], 101.55)
+        self.assertEqual(mm.mae_scores["L3"], 95.48)
+        self.assertEqual(mm.mae_scores["L4"], 134.70)
+        if mm.mae_scores.get("L5") is not None:
+            self.assertLess(mm.mae_scores["L5"], mm.mae_scores["L0"])
+            self.assertLess(mm.mae_scores["L5"], mm.mae_scores["L4"])
+
+        summary = mm.get_summary_table()
+        self.assertEqual(len(summary), 6)
+        self.assertEqual([row["Level"] for row in summary], ["L0", "L1", "L2", "L3", "L4", "L5"])
+
+    def test_regression_18_strict_table_9_4_schema_disk_verification(self):
+        """18. Strict SRS Table 9.4 12-field schema compliance on disk: log_id, request_id, UTC timestamp, types."""
+        res = predict_demand_workflow(
+            target_date=date(2026, 11, 2),
+            target_hour=14,
+            model_level="L5",
+            use_manual_weather=True,
+            manual_weather={"temperature_c": 19.5, "humidity_pct": 52.0, "wind_speed_kmh": 11.0, "weather_desc": "Clear"},
+            log_path=self.log_path,
+        )
+        self.assertTrue(res["success"])
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        self.assertEqual(len(lines), 1)
+
+        record = json.loads(lines[0])
+        expected_fields = {
+            "log_id",
+            "request_id",
+            "timestamp",
+            "requested_datetime",
+            "status",
+            "error_code",
+            "weather_source",
+            "api_status",
+            "input_vector",
+            "predicted_cnt",
+            "model_level",
+            "model_version",
+        }
+        self.assertEqual(set(record.keys()), expected_fields)
+        self.assertTrue(is_valid_uuid4(record["log_id"]))
+        self.assertTrue(is_valid_uuid4(record["request_id"]))
+        self.assertNotEqual(record["log_id"], record["request_id"])
+        self.assertTrue("T" in record["timestamp"])
 
 
 if __name__ == "__main__":

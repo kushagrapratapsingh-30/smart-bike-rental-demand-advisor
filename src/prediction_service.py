@@ -124,6 +124,15 @@ def predict_demand_workflow(
         hr_val = target_hour
     elif isinstance(target_date, datetime):
         hr_val = target_date.hour
+    elif isinstance(target_date, str):
+        try:
+            parsed_iso = datetime.fromisoformat(target_date)
+            if "T" in target_date or " " in target_date:
+                hr_val = parsed_iso.hour
+            else:
+                hr_val = None
+        except Exception:
+            hr_val = None
     else:
         hr_val = None
 
